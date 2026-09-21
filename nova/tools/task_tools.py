@@ -121,7 +121,9 @@ def _task_create(args: dict[str, Any], **kwargs) -> str:
         return json.dumps(
             {"success": False, "error": f"Maximum of {max_concurrent} concurrent tasks reached."}
         )
-    task_id = mgr.create_shell_task(command, description)
+    workspace = kwargs.get("workspace")
+    cwd = str(workspace) if workspace is not None else None
+    task_id = mgr.create_shell_task(command, description, cwd=cwd)
     return json.dumps(
         {
             "success": True,

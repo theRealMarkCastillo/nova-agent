@@ -152,6 +152,16 @@ def test_build_subagent_config_does_not_mutate_parent():
     assert parent_config["llm"]["model"] == original_model
 
 
+def test_build_subagent_config_applies_tool_result_token_budget():
+    parent_config = _minimal_config(delegation_enabled=True)
+    parent_config["delegation"]["subagent_budgets"]["tool_result_max_tokens"] = 4000
+    parent_config["budgets"]["tool_result_max_tokens"] = 12000
+
+    child_config = _build_subagent_config(parent_config, depth=1, model=None, max_iterations=30)
+
+    assert child_config["budgets"]["tool_result_max_tokens"] == 4000
+
+
 # ---------------------------------------------------------------------------
 # NovaAgent depth tracking
 # ---------------------------------------------------------------------------
@@ -487,7 +497,7 @@ def test_run_subagent_happy_path():
 
     with (
         patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
-        patch("nova.agent.NovaAgent", return_value=mock_subagent),
+        patch("nova.agent.NovaAgent", return_value=mock_subagent) as mock_agent_class,
     ):
         result = _run_subagent(
             task="do something",
@@ -505,6 +515,7 @@ def test_run_subagent_happy_path():
     assert result["error"] is None
     assert result["timeout"] is False
     assert "elapsed_seconds" in result
+    assert mock_agent_class.call_args.kwargs["workspace"] == parent.workspace
 
 
 def test_run_subagent_exception_returns_error_dict():

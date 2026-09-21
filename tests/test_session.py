@@ -2,6 +2,7 @@
 
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 from nova.session import SessionStore
@@ -182,7 +183,7 @@ def test_prune_sessions():
 
         # Manually set old session to 40 days ago
         cutoff = (datetime.now() - timedelta(days=40)).isoformat()
-        with sqlite3.connect(db) as conn:
+        with closing(sqlite3.connect(db)) as conn, conn:
             conn.execute(
                 "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
                 (cutoff, sid_old),
@@ -439,7 +440,7 @@ def test_legacy_database_migrates_reasoning_content_column():
     """Existing databases must gain columns added after their initial schema."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "test.db"
-        with sqlite3.connect(db) as conn:
+        with closing(sqlite3.connect(db)) as conn, conn:
             conn.executescript(
                 """
                 CREATE TABLE sessions (

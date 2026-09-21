@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from nova.agent import NovaAgent
 from nova.session import SessionStore
+from nova.tokens import estimate_tokens
 
 
 @pytest.fixture
@@ -167,6 +168,12 @@ def test_truncate_to_token_budget_preserves_head(minimal_config, mock_session_st
 
     # Head should be included
     assert "START" in result or "Important beginning" in result
+
+
+@pytest.mark.parametrize("max_tokens", [1, 2, 10, 50])
+def test_truncate_to_token_budget_never_exceeds_cap(max_tokens):
+    result = NovaAgent._truncate_to_token_budget("x " * 2000, max_tokens)
+    assert estimate_tokens(result) <= max_tokens
 
 
 def test_estimate_messages_tokens_with_tool_calls(minimal_config, mock_session_store):

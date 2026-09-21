@@ -1,5 +1,7 @@
 """Tests for the permission system."""
 
+from pathlib import Path
+
 from nova.permissions import (
     PermissionChecker,
     PermissionMode,
@@ -216,7 +218,56 @@ def test_path_rule_allow():
     assert result.requires_confirmation is False  # short-circuited by allow rule
 
 
+def test_path_rule_cannot_be_bypassed_with_parent_segments(tmp_path: Path):
+    denied = tmp_path / "private" / "secret.txt"
+    settings = PermissionSettings(
+        mode=PermissionMode.AUTO,
+        path_rules=[{"pattern": str(denied), "allow": False}],
+    )
+    checker = PermissionChecker(settings)
+
+    disguised = tmp_path / "private" / ".." / "private" / "secret.txt"
+    assert checker.evaluate("read_file", file_path=str(disguised)).allowed is False
+
+
+def test_relative_path_rule_matches_relative_path(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    checker = PermissionChecker(
+        PermissionSettings(
+            mode=PermissionMode.AUTO, path_rules=[{"pattern": "private/*", "allow": False}]
+        )
+    )
+
+    assert checker.evaluate("read_file", file_path="private/secret.txt").allowed is False
+
+
 # ── build_permission_checker ────────────────────────────────────────────────
+
+
+def test_relative_rules_use_session_workspace(tmp_path, monkeypatch):
+    server = tmp_path / "server"
+    workspace = tmp_path / "project"
+    server.mkdir()
+    workspace.mkdir()
+    monkeypatch.chdir(server)
+    checker = build_permission_checker(
+        {"permissions": {"path_rules": [{"pattern": "private/*", "allow": False}]}},
+        workspace=workspace,
+    )
+
+    for path in ("private/secret.txt", str(workspace / "private/secret.txt")):
+        assert not checker.evaluate("read_file", file_path=path).allowed
+
+
+def test_leading_wildcard_rules_match_outside_workspace(tmp_path):
+    checker = PermissionChecker(
+        PermissionSettings(path_rules=[{"pattern": "*/private/*", "allow": False}]),
+        workspace=tmp_path / "server",
+    )
+
+    assert not checker.evaluate(
+        "read_file", file_path=str(tmp_path / "project/private/secret.txt")
+    ).allowed
 
 
 def test_build_checker_from_config_default():

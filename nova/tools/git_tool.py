@@ -144,14 +144,14 @@ def _truncate_output(output: str, max_chars: int = _MAX_OUTPUT_CHARS) -> str:
     )
 
 
-def _run_git_command(repo: str, *args: str) -> tuple[int, str, str]:
+def _run_git_command(repo: str, *args: str, **kwargs: Any) -> tuple[int, str, str]:
     """Run a git command and return (returncode, stdout, stderr)."""
     repo_path = Path(repo).expanduser()
     if _reject_option(repo, "repository"):
         raise ValueError("Invalid repository")
     if not repo_path.exists() or not repo_path.is_dir():
         raise ValueError(f"Repository not found: {repo}")
-    if error := path_safety_error(repo_path):
+    if error := path_safety_error(repo_path, **kwargs):
         raise ValueError(error)
 
     cmd = ["git"] + list(args)
@@ -182,7 +182,7 @@ def _git_status(args: dict[str, Any], **kwargs: Any) -> str:
     repo = args.get("repo", ".")
 
     try:
-        returncode, stdout, stderr = _run_git_command(repo, "status", "--short")
+        returncode, stdout, stderr = _run_git_command(repo, "status", "--short", **kwargs)
         if returncode != 0:
             return f"Error: {stderr.strip()}"
         if not stdout.strip():
@@ -198,7 +198,9 @@ def _git_log(args: dict[str, Any], **kwargs: Any) -> str:
     limit = min(int(args.get("limit", 20)), 100)
 
     try:
-        returncode, stdout, stderr = _run_git_command(repo, "log", "--oneline", f"-{limit}")
+        returncode, stdout, stderr = _run_git_command(
+            repo, "log", "--oneline", f"-{limit}", **kwargs
+        )
         if returncode != 0:
             return f"Error: {stderr.strip()}"
         if not stdout.strip():
@@ -225,7 +227,7 @@ def _git_diff(args: dict[str, Any], **kwargs: Any) -> str:
                 return error
             cmd.extend(("--", file_path))
 
-        returncode, stdout, stderr = _run_git_command(repo, *cmd)
+        returncode, stdout, stderr = _run_git_command(repo, *cmd, **kwargs)
         if returncode != 0:
             return f"Error: {stderr.strip()}"
         if not stdout.strip():
@@ -248,7 +250,7 @@ def _git_blame(args: dict[str, Any], **kwargs: Any) -> str:
         return error
 
     try:
-        returncode, stdout, stderr = _run_git_command(repo, "blame", "--", file_path)
+        returncode, stdout, stderr = _run_git_command(repo, "blame", "--", file_path, **kwargs)
         if returncode != 0:
             return f"Error: {stderr.strip()}"
         return _truncate_output(stdout)
@@ -266,6 +268,12 @@ def _git_show(args: dict[str, Any], **kwargs: Any) -> str:
         return "Error: rev is required."
     if error := _reject_option(rev, "rev"):
         return error
+    if not file_path and ":" in rev:
+        revision, revision_path = rev.split(":", 1)
+        if not revision or not revision_path:
+            return "Error: Invalid rev."
+        if error := path_safety_error(Path(repo) / revision_path, **kwargs):
+            return error
     if file_path and (error := _reject_option(file_path, "file_path")):
         return error
     if file_path and (error := path_safety_error(Path(repo) / file_path, **kwargs)):
@@ -273,7 +281,7 @@ def _git_show(args: dict[str, Any], **kwargs: Any) -> str:
 
     try:
         spec = f"{rev}:{file_path}" if file_path else rev
-        returncode, stdout, stderr = _run_git_command(repo, "show", spec)
+        returncode, stdout, stderr = _run_git_command(repo, "show", spec, **kwargs)
         if returncode != 0:
             return f"Error: {stderr.strip()}"
         return _truncate_output(stdout)

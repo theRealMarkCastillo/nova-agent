@@ -13,6 +13,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from nova.tools.registry import _READ_ONLY_TOOLS
@@ -115,8 +116,11 @@ class PermissionChecker:
     6. Permission mode (auto vs ask)
     """
 
-    def __init__(self, settings: PermissionSettings | None = None):
+    def __init__(
+        self, settings: PermissionSettings | None = None, *, workspace: Path | None = None
+    ) -> None:
         self.settings = settings or PermissionSettings()
+        self.workspace = (workspace or Path.cwd()).expanduser().resolve()
 
     def evaluate(
         self,
@@ -185,6 +189,7 @@ class PermissionChecker:
 
     def _matches_sensitive_path(self, path: str) -> bool:
         """Check if a path matches any built-in sensitive pattern."""
+        path = self._normalize_path(path)
         # Check both the path and path with trailing slash for directory matches
         for pattern in _SENSITIVE_PATH_PATTERNS:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path + "/", pattern):
@@ -193,8 +198,9 @@ class PermissionChecker:
 
     def _check_path_rules(self, path: str) -> PermissionResult | None:
         """Check path against user-defined path rules. Returns None if no match."""
+        path = self._normalize_path(path)
         for rule in self.settings.path_rules:
-            pattern = rule.get("pattern", "")
+            pattern = self._normalize_pattern(rule.get("pattern", ""))
             allow = rule.get("allow", True)
             if fnmatch.fnmatch(path, pattern):
                 if allow:
@@ -204,6 +210,38 @@ class PermissionChecker:
                     reason=f"Path denied by rule: '{pattern}'",
                 )
         return None
+
+    def _normalize_path(self, path: str) -> str:
+        try:
+            expanded = Path(path).expanduser()
+            if not expanded.is_absolute():
+                expanded = self.workspace / expanded
+            return str(expanded.resolve(strict=False))
+        except (OSError, ValueError):
+            return path
+
+    def _normalize_pattern(self, pattern: str) -> str:
+        if not pattern:
+            return pattern
+        if pattern[0] in "*?[":
+            return pattern
+        expanded = str(Path(pattern).expanduser())
+        if not Path(expanded).is_absolute():
+            expanded = str(self.workspace / expanded)
+        prefix_length = len(expanded)
+        for marker in ("*", "?", "["):
+            index = expanded.find(marker)
+            if index >= 0:
+                prefix_length = min(prefix_length, index)
+        prefix = expanded[:prefix_length]
+        suffix = expanded[prefix_length:]
+        try:
+            normalized_prefix = str(Path(prefix or "/").resolve(strict=False))
+        except (OSError, ValueError):
+            return expanded
+        if prefix.endswith("/") and not normalized_prefix.endswith("/"):
+            normalized_prefix += "/"
+        return normalized_prefix + suffix
 
     def _matches_denied_command(self, command: str) -> bool:
         """Check if a command matches any deny pattern."""
@@ -220,7 +258,7 @@ class PermissionChecker:
         return tool_name in _MUTATING_TOOLS
 
 
-def build_permission_checker(config: dict) -> PermissionChecker:
+def build_permission_checker(config: dict, *, workspace: Path | None = None) -> PermissionChecker:
     """Build a PermissionChecker from Nova-Agent config."""
     perm_cfg = config.get("permissions", {})
 
@@ -239,4 +277,4 @@ def build_permission_checker(config: dict) -> PermissionChecker:
         path_rules=perm_cfg.get("path_rules", []),
     )
 
-    return PermissionChecker(settings)
+    return PermissionChecker(settings, workspace=workspace)

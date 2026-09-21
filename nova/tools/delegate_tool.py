@@ -107,6 +107,8 @@ def _build_subagent_config(
         config["budgets"]["context_total_max_chars"] = subagent_budgets["context_total_max_chars"]
     if "tool_result_max_chars" in subagent_budgets:
         config["budgets"]["tool_result_max_chars"] = subagent_budgets["tool_result_max_chars"]
+    if "tool_result_max_tokens" in subagent_budgets:
+        config["budgets"]["tool_result_max_tokens"] = subagent_budgets["tool_result_max_tokens"]
 
     return config
 
@@ -187,6 +189,7 @@ def _run_subagent(
                 wiki_memory_store=parent_agent.wiki,
                 prompt_mode="minimal",
                 confirmation_callback=getattr(parent_agent, "_confirmation_callback", None),
+                workspace=parent_agent.workspace,
             )
 
             # Inject prefill messages if forking

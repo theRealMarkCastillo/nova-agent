@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from openai import OpenAI
@@ -193,6 +193,95 @@ def test_execute_tool_calls_parallel_empty_list(minimal_config, mock_session_sto
 
     results = agent._execute_tool_calls_parallel([])
     assert results == []
+
+
+def test_interrupt_skips_remaining_mutating_tools(minimal_config, mock_session_store):
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+    )
+    interrupted = False
+    executed = []
+
+    def execute(tool_call):
+        nonlocal interrupted
+        executed.append(tool_call["id"])
+        interrupted = True
+        return "ok"
+
+    agent._execute_tool_call = execute
+    agent._interrupt_check = lambda: interrupted
+    calls = [
+        {"id": "first", "function": {"name": "write_file", "arguments": "{}"}},
+        {"id": "second", "function": {"name": "write_file", "arguments": "{}"}},
+    ]
+
+    results = agent._execute_tool_calls_parallel(calls)
+
+    assert executed == ["first"]
+    assert results[1].startswith("[Interrupted")
+
+
+@pytest.mark.parametrize("cancel_stage", ["approval", "pre_tool_hook"])
+def test_cancellation_before_dispatch_prevents_write(
+    minimal_config, mock_session_store, tmp_path, cancel_stage
+):
+    interrupted = False
+
+    def approve(*args):
+        nonlocal interrupted
+        interrupted = cancel_stage == "approval"
+        return True
+
+    def emit(event, **kwargs):
+        nonlocal interrupted
+        if event == "pre_tool_call" and cancel_stage == "pre_tool_hook":
+            interrupted = True
+
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+        confirmation_callback=approve,
+    )
+    agent._interrupt_check = lambda: interrupted
+    call = {
+        "id": "write",
+        "function": {
+            "name": "write_file",
+            "arguments": '{"path":"output.txt","content":"data"}',
+        },
+    }
+
+    with patch("nova.agent.hooks.emit", side_effect=emit):
+        results = agent._execute_tool_calls_parallel([call])
+
+    assert results[0].startswith("[Interrupted")
+    assert not (tmp_path / "output.txt").exists()
+
+
+def test_agent_relative_deny_rule_uses_workspace(minimal_config, mock_session_store, tmp_path):
+    minimal_config["permissions"] = {
+        "path_rules": [{"pattern": "private/*", "allow": False}],
+    }
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+    )
+    call = {
+        "id": "read",
+        "function": {"name": "read_file", "arguments": '{"path":"private/secret.txt"}'},
+    }
+
+    with patch("nova.agent.registry.dispatch") as dispatch:
+        result = agent._execute_tool_call_impl(call)
+
+    assert "Path denied by rule" in result
+    dispatch.assert_not_called()
 
 
 def test_execute_tool_calls_parallel_callback_invoked(minimal_config, mock_session_store):

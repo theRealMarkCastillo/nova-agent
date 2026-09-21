@@ -50,6 +50,15 @@ def test_task_create_success(mock_task_manager):
     assert "test task" in data["description"]
 
 
+def test_task_create_uses_agent_workspace(mock_task_manager, tmp_path):
+    mock_task_manager.create_shell_task.return_value = "b12345"
+
+    with patch("nova.tools.task_tools.get_task_manager", return_value=mock_task_manager):
+        _task_create({"command": "pwd"}, workspace=tmp_path)
+
+    mock_task_manager.create_shell_task.assert_called_once_with("pwd", "", cwd=str(tmp_path))
+
+
 def test_task_create_long_command_preview(mock_task_manager):
     long_cmd = "x" * 100
     mock_task_manager.create_shell_task.return_value = "bxyz"

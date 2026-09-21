@@ -66,6 +66,10 @@ _COMPACTION_NOTE = {
 }
 
 
+class ContextBudgetError(ValueError):
+    """Raised when the system prompt and active turn cannot fit the model window."""
+
+
 def _normalize_message_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Remove incomplete tool-call blocks before sending history to a provider."""
     normalized: list[dict[str, Any]] = []
@@ -196,7 +200,9 @@ class NovaAgent:
             self.is_leaf_agent: bool = self.depth >= max_spawn_depth
 
             # Permission checker
-            self.permission_checker: PermissionChecker = build_permission_checker(self.config)
+            self.permission_checker: PermissionChecker = build_permission_checker(
+                self.config, workspace=self.workspace
+            )
 
             # Cost tracker
             cost_cfg = self.config.get("cost_tracking", {})
@@ -547,6 +553,8 @@ class NovaAgent:
         arguments = self._apply_workspace_defaults(name, arguments)
 
         # Permission check
+        if self._interrupt_check is not None and self._interrupt_check():
+            return "[Interrupted by user before tool execution]"
         entry = registry.get_tool(name)
         mcp_tool = self._mcp_tool_info(name)
         is_mcp_resource = name == self._mcp_resource_tool_name
@@ -583,6 +591,9 @@ class NovaAgent:
                 )
                 return f"Error: Tool '{name}' requires confirmation"
 
+        if self._interrupt_check is not None and self._interrupt_check():
+            return "[Interrupted by user before tool execution]"
+
         # Fire pre_tool_call hook (also fired in registry.dispatch, but we fire here
         # first so the permission check happens before the hook)
         hooks.emit(EVENT_PRE_TOOL_CALL, tool_name=name, args=arguments)
@@ -591,10 +602,14 @@ class NovaAgent:
         max_retries = max(0, self.config.get("agent", {}).get("tool_retry_max_attempts", 2))
         result = ""
         for attempt in range(max_retries + 1):
+            if self._interrupt_check is not None and self._interrupt_check():
+                return "[Interrupted by user before tool execution]"
             # Pass config, wiki, and agent reference to tool handlers via kwargs
             try:
                 if mcp_tool is not None:
                     with self._mcp_call_lock:
+                        if self._interrupt_check is not None and self._interrupt_check():
+                            return "[Interrupted by user before tool execution]"
                         result = self.mcp_client.call_tool(
                             mcp_tool.server_name, mcp_tool.name, arguments
                         )
@@ -760,6 +775,12 @@ class NovaAgent:
 
         # Execute write/mutate tools sequentially
         for idx, tc in write_calls:
+            interrupt_check = getattr(self, "_interrupt_check", None)
+            if interrupt_check is not None and interrupt_check():
+                interrupted_result = "[Interrupted by user before tool execution]"
+                results[idx] = interrupted_result
+                self._report_tool_result(tc, interrupted_result)
+                continue
             tool_cb = getattr(self, "_tool_callback", None)
             if tool_cb:
                 fn_name = tc.get("function", {}).get("name", "")
@@ -841,27 +862,31 @@ class NovaAgent:
         """
         from nova.tokens import estimate_tokens
 
+        if max_tokens <= 0:
+            return ""
         total_tokens = estimate_tokens(text)
         if total_tokens <= max_tokens:
             return text
 
-        # Estimate chars per token ratio
-        chars_per_token = len(text) / total_tokens if total_tokens > 0 else 4
-        max_chars = int(max_tokens * chars_per_token)
+        marker = f"\n\n[...{total_tokens - max_tokens:,} tokens truncated...]\n\n"
+        if estimate_tokens(marker) >= max_tokens:
+            marker = ""
 
-        head_chars = int(max_chars * 0.70)
-        tail_chars = int(max_chars * 0.20)
-
-        if head_chars + tail_chars >= len(text):
-            return text
-
-        head = text[:head_chars]
-        tail = text[-tail_chars:]
-        truncated_tokens = (
-            total_tokens - int(head_chars / chars_per_token) - int(tail_chars / chars_per_token)
-        )
-
-        return f"{head}\n\n[...{truncated_tokens:,} tokens truncated...]\n\n{tail}"
+        low = 0
+        high = len(text)
+        best = ""
+        while low <= high:
+            kept = (low + high) // 2
+            head_chars = int(kept * 0.78)
+            tail_chars = kept - head_chars
+            tail = text[-tail_chars:] if tail_chars else ""
+            candidate = f"{text[:head_chars]}{marker}{tail}"
+            if estimate_tokens(candidate) <= max_tokens:
+                best = candidate
+                low = kept + 1
+            else:
+                high = kept - 1
+        return best
 
     def run(
         self,
@@ -912,14 +937,21 @@ class NovaAgent:
 
         microcompact_cfg = self.config.get("microcompact", {})
         keep_recent = int(microcompact_cfg.get("keep_recent", 6))
+        conversation_budget = active_budget - estimate_total_request_tokens([], tools=tools)
+        if conversation_budget < 1:
+            raise ContextBudgetError("Tool definitions leave no room for conversation context")
         compacted = compact_to_token_budget(
             api_messages,
-            max_tokens=active_budget - estimate_total_request_tokens([], tools=tools),
+            max_tokens=conversation_budget,
             keep_recent=keep_recent,
             strip_tool_results=microcompact_cfg.get("enabled", True),
         )
         compacted = _normalize_message_history(compacted)
         compacted_tokens = estimate_total_request_tokens(compacted, tools=tools)
+        if compacted_tokens > active_budget:
+            raise ContextBudgetError(
+                "System prompt and active conversation cannot fit the model context window"
+            )
         if compacted_tokens < total_tokens:
             logger.info(
                 "Deterministic compaction: %d → %d tokens (saved %d)",
@@ -928,19 +960,15 @@ class NovaAgent:
                 total_tokens - compacted_tokens,
             )
             conversation = self._conversation_messages_from_api(compacted)
-            if not any(
+            note_needed = not any(
                 isinstance(m.get("content"), str)
                 and m["content"].startswith(_COMPACTION_NOTE_PREFIX)
                 for m in compacted
-            ):
-                compacted = [*compacted, _COMPACTION_NOTE]
-            if compacted_tokens > active_budget:
-                logger.warning(
-                    "Context remains above active budget: %d > %d tokens; "
-                    "historical retrieval may be needed",
-                    compacted_tokens,
-                    active_budget,
-                )
+            )
+            if note_needed:
+                noted = [*compacted, _COMPACTION_NOTE]
+                if estimate_total_request_tokens(noted, tools=tools) <= active_budget:
+                    compacted = noted
             return compacted, conversation
 
         logger.warning(
@@ -984,6 +1012,9 @@ class NovaAgent:
         )
 
         while iteration < max_iterations:
+            if _interrupt_check is not None and _interrupt_check():
+                logger.info("Agent interrupted before model request")
+                return "[Interrupted]"
             iteration += 1
 
             # Keep requests below the model window without making another LLM call.

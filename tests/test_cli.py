@@ -1,7 +1,9 @@
 """Tests for CLI argument parsing and command implementations."""
 
+import getpass
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -501,15 +503,17 @@ class TestCmdSetup:
         args = MagicMock()
         tmpdir = tempfile.mkdtemp()
 
-        with (
-            patch("nova.cli.ensure_nova_home") as mock_ensure,
-            patch.dict("os.environ", {}, clear=True),
-            patch("builtins.input", return_value=""),
-        ):  # no API key
-            mock_ensure.return_value = Path(tmpdir)
-            with pytest.raises(SystemExit) as exc_info:
-                cmd_setup(args)
-            assert exc_info.value.code == 1
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=getpass.GetPassWarning)
+            with (
+                patch("nova.cli.ensure_nova_home") as mock_ensure,
+                patch.dict("os.environ", {}, clear=True),
+                patch("builtins.input", return_value=""),
+            ):  # no API key
+                mock_ensure.return_value = Path(tmpdir)
+                with pytest.raises(SystemExit) as exc_info:
+                    cmd_setup(args)
+                assert exc_info.value.code == 1
 
     def test_cmd_setup_with_custom_model(self, capsys):
         """Test setup with custom model selection."""

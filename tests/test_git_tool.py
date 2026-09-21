@@ -138,6 +138,21 @@ class TestGitShow:
         result = _git_show({"repo": str(tmp_path), "rev": "HEAD", "file_path": "/etc/passwd"})
         assert "Access denied" in result
 
+    def test_git_show_rejects_sensitive_path_embedded_in_rev(self, tmp_path):
+        result = _git_show({"repo": str(tmp_path), "rev": "HEAD:.env"})
+        assert "Access denied" in result
+
+
+def test_git_status_rejects_repository_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    repository = tmp_path / "other"
+    workspace.mkdir()
+    repository.mkdir()
+
+    result = _git_status({"repo": str(repository)}, workspace=workspace)
+
+    assert "outside known workspaces" in result
+
 
 class TestGitIntegration:
     """Integration tests with mocked subprocess."""

@@ -39,7 +39,7 @@ def microcompact_messages(
         New message list with old tool content stripped.
     """
     if len(messages) <= keep_recent:
-        return list(messages)
+        return copy.deepcopy(messages)
 
     result = []
     split_point = len(messages) - keep_recent
@@ -133,7 +133,7 @@ def compact_to_token_budget(
     result = (
         microcompact_messages(messages, keep_recent=keep_recent)
         if strip_tool_results
-        else list(messages)
+        else copy.deepcopy(messages)
     )
     while estimate_messages_tokens(result) > max_tokens:
         user_indexes = [
@@ -146,5 +146,28 @@ def compact_to_token_budget(
         start = user_indexes[0]
         end = user_indexes[1]
         del result[start:end]
+
+    if estimate_messages_tokens(result) <= max_tokens:
+        return result
+
+    for message in result:
+        if message.get("role") != "tool" or not message.get("content"):
+            continue
+        message["content"] = "[tool result stripped to fit context budget]"
+        if estimate_messages_tokens(result) <= max_tokens:
+            return result
+
+    for message in result:
+        if message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            function = call.get("function")
+            if isinstance(function, dict):
+                function["arguments"] = "{}"
+        if estimate_messages_tokens(result) <= max_tokens:
+            return result
 
     return result

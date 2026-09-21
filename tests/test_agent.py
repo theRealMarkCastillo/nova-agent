@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nova.agent import NovaAgent, _normalize_message_history
+from nova.agent import ContextBudgetError, NovaAgent, _normalize_message_history
 from nova.mcp_client import McpResourceInfo, McpToolInfo
 from nova.tools.registry import discover_builtin_tools
 
@@ -436,7 +436,7 @@ def test_agent_history_compacts_to_token_budget(
 
     assert len(agent.messages) == 20
 
-    with patch("nova.agent.get_model_context_window", return_value=2000):
+    with patch("nova.agent.get_model_context_window", return_value=10000):
         agent.run("latest message", stream=False)
 
     assert len(agent.messages) < 22
@@ -457,7 +457,7 @@ def test_compaction_injects_recovery_note(minimal_config, mock_session_store, mo
         agent.messages.append({"role": "user", "content": f"msg {i} " * 100})
         agent.messages.append({"role": "assistant", "content": f"reply {i} " * 100})
 
-    with patch("nova.agent.get_model_context_window", return_value=2000):
+    with patch("nova.agent.get_model_context_window", return_value=10000):
         agent.run("latest message", stream=False)
 
     sent = mock_openai_client.chat.completions.create.call_args.kwargs["messages"]
@@ -473,6 +473,30 @@ def test_compaction_injects_recovery_note(minimal_config, mock_session_store, mo
     assert not any(
         "older conversation history was removed" in m.get("content", "") for m in agent.messages
     )
+
+
+def test_compaction_fails_without_altering_required_context(
+    minimal_config, mock_session_store, mock_openai_client
+):
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=mock_openai_client,
+        session_store=mock_session_store,
+    )
+    agent._system_prompt = "system " * 1000
+    api_messages = [
+        {"role": "system", "content": agent._system_prompt},
+        {"role": "user", "content": "keep this request"},
+    ]
+
+    with (
+        patch("nova.agent.get_model_context_window", return_value=1200),
+        pytest.raises(ContextBudgetError),
+    ):
+        agent._compact_if_needed(api_messages, tools=[])
+
+    assert api_messages[0]["content"] == agent._system_prompt
+    assert api_messages[1]["content"] == "keep this request"
 
 
 def test_agent_execute_tool_call_invalid_json(
