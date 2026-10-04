@@ -1,7 +1,7 @@
 # GUIDE-009: Using Nova Effectively
 
 **Status:** ✅ Active  
-**Last Updated:** May 2026  
+**Last Updated:** October 2026
 **Type:** GUIDE (User Reference)
 
 > Practical patterns for getting consistent, high-quality results from Nova Agent day-to-day.
@@ -232,6 +232,14 @@ git diff HEAD   # everything since last commit
 - Compact long sessions before switching to a new subtask
 
 ---
+
+## Updating Nova
+
+For a Git-based installation, run `nova update` from the environment where you use
+Nova. The updater reinstalls dependencies into the virtualenv running Nova,
+including virtualenvs outside the repository. Without a running virtualenv, it
+checks the repository's `.venv` and then `venv`. It prints the selected interpreter
+and exits with an error if no virtualenv is available or installation fails.
 
 ## Related Documentation
 

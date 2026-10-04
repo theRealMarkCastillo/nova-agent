@@ -1,6 +1,7 @@
 """Tests for CLI argument parsing and command implementations."""
 
 import getpass
+import subprocess
 import sys
 import tempfile
 import warnings
@@ -16,6 +17,7 @@ from nova.cli import (
     cmd_reset,
     cmd_sessions,
     cmd_setup,
+    cmd_update,
     main,
 )
 
@@ -588,3 +590,79 @@ def test_setup_scopes_existing_context_window(tmp_path, change, expected):
     ):
         cmd_setup(MagicMock())
     assert yaml.safe_load(path.read_text())["llm"]["context_window"] == expected
+
+
+@pytest.fixture
+def update_environment(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setattr("nova.cli.__file__", str(repo / "nova" / "cli.py"))
+    run = MagicMock(return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""))
+    monkeypatch.setattr("nova.cli.subprocess.run", run)
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "system"))
+    monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "system" / "python"))
+    return repo, run
+
+
+@pytest.mark.parametrize(
+    "active, executable_exists, repo_envs, expected",
+    [
+        (True, True, (), "external"),
+        (True, True, (".venv", "venv"), "external"),
+        (True, False, (".venv",), ".venv"),
+        (False, True, (".venv", "venv"), ".venv"),
+        (False, True, ("venv",), "venv"),
+        (False, True, (), None),
+        (True, False, (), None),
+    ],
+)
+def test_update_targets_selected_environment(
+    update_environment, monkeypatch, capsys, active, executable_exists, repo_envs, expected
+):
+    repo, run = update_environment
+    executable = repo.parent / "external" / "bin" / "python"
+    if executable_exists:
+        executable.parent.mkdir(parents=True)
+        base_python = repo.parent / "base-python"
+        base_python.touch()
+        executable.symlink_to(base_python)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    if active:
+        monkeypatch.setattr(sys, "prefix", str(executable.parent.parent))
+    for name in repo_envs:
+        path = repo / name / "bin" / "python"
+        path.parent.mkdir(parents=True)
+        path.touch()
+
+    if expected is None:
+        with pytest.raises(SystemExit) as error:
+            cmd_update(MagicMock())
+        assert error.value.code == 1
+        assert "updated successfully" not in capsys.readouterr().out
+        assert not any("pip" in call.args[0] for call in run.call_args_list)
+        return
+
+    cmd_update(MagicMock())
+    selected = executable if expected == "external" else repo / expected / "bin" / "python"
+    run.assert_called_with(
+        [str(selected), "-m", "pip", "install", "-e", ".[dev]"], cwd=repo, check=True
+    )
+    assert "updated successfully" in capsys.readouterr().out
+
+
+def test_update_propagates_install_failure(update_environment, capsys):
+    repo, run = update_environment
+    interpreter = repo / ".venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+
+    def subprocess_result(command, **kwargs):
+        if "pip" in command:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    run.side_effect = subprocess_result
+    with pytest.raises(subprocess.CalledProcessError):
+        cmd_update(MagicMock())
+    assert "updated successfully" not in capsys.readouterr().out

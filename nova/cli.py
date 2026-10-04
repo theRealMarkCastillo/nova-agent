@@ -374,20 +374,25 @@ def cmd_update(args):
         print("  You may have local changes. Run 'git pull' manually.")
         sys.exit(1)
 
-    # Reinstall dependencies
-    venv_python = next(
-        (
-            candidate
-            for candidate in (
-                install_dir / ".venv" / "bin" / "python",
-                install_dir / "venv" / "bin" / "python",
-            )
-            if candidate.exists()
-        ),
-        None,
-    )
+    venv_python: Path | None = None
+    if sys.prefix != sys.base_prefix:
+        current_python = Path(sys.executable)
+        if current_python.exists():
+            venv_python = current_python
+    if venv_python is None:
+        venv_python = next(
+            (
+                candidate
+                for candidate in (
+                    install_dir / ".venv" / "bin" / "python",
+                    install_dir / "venv" / "bin" / "python",
+                )
+                if candidate.exists()
+            ),
+            None,
+        )
     if venv_python is not None:
-        print("Reinstalling dependencies...")
+        print(f"Reinstalling dependencies into {venv_python}...")
         subprocess.run(
             [str(venv_python), "-m", "pip", "install", "-e", ".[dev]"],
             cwd=install_dir,
