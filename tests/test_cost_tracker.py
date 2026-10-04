@@ -1,7 +1,11 @@
 """Tests for the cost tracker."""
 
+from unittest.mock import patch
+
+import pytest
+
 from nova.cost_tracker import CostTracker, UsageSnapshot, extract_usage_from_response
-from nova.model_metadata import load_provider_metadata
+from nova.model_metadata import ModelMetadata, load_provider_metadata
 
 # ── UsageSnapshot ───────────────────────────────────────────────────────────
 
@@ -191,3 +195,78 @@ def test_cache_tokens_are_included_in_cost_summary():
     tracker.add_usage(input_tokens=100, output_tokens=10, cache_read_tokens=90)
     assert tracker.total.cache_read_tokens == 90
     assert "Cache: 90 read" in tracker.format_summary()
+
+
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({}, 90),
+        ({"cache_read_input_tokens": 30}, 30),
+        ({"prompt_cache_hit_tokens": 40}, 40),
+        ({"cache_read_input_tokens": 30, "prompt_cache_hit_tokens": 40}, 30),
+        ({"cache_read_input_tokens": 0}, 90),
+        ({"cache_read_input_tokens": 0, "prompt_cache_hit_tokens": 40}, 40),
+        ({"prompt_cache_hit_tokens": 0}, 90),
+    ],
+)
+def test_nested_cached_tokens_preserve_totals_and_precedence(fields, expected):
+    usage = extract_usage_from_response(
+        {
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 90},
+                "cache_creation_input_tokens": 10,
+                **fields,
+            }
+        }
+    )
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 5
+    assert usage["cache_read_tokens"] == expected
+    assert usage["cache_write_tokens"] == 10
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        None,
+        {},
+        [],
+        "invalid",
+        {"cached_tokens": None},
+        {"cached_tokens": "90"},
+        {"cached_tokens": -1},
+        {"cached_tokens": True},
+    ],
+)
+def test_missing_or_malformed_prompt_details(details):
+    usage = extract_usage_from_response(
+        {"usage": {"prompt_tokens": 100, "prompt_tokens_details": details}}
+    )
+    assert usage["cache_read_tokens"] == 0
+    assert usage["input_tokens"] == 100
+
+
+@pytest.mark.parametrize("reported_cost", [None, 0.0, 0.00005])
+def test_nested_cache_usage_cost_accounting(reported_cost):
+    response = {
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 90},
+        }
+    }
+    if reported_cost is not None:
+        response["usage"]["cost"] = reported_cost
+    metadata = ModelMetadata(
+        input_price_per_million=2, output_price_per_million=4, cache_read_price_per_million=0.2
+    )
+    tracker = CostTracker(model="test-model")
+    with patch("nova.cost_tracker.get_model_metadata", return_value=metadata):
+        tracker.add_usage(**extract_usage_from_response(response))
+    assert tracker.total.input_tokens == 100
+    assert tracker.total.cache_read_tokens == 90
+    assert tracker.total.total_tokens == 105
+    expected = reported_cost if reported_cost is not None else 0.000058
+    assert tracker.total.total_cost == pytest.approx(expected)

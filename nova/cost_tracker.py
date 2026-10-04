@@ -4,6 +4,7 @@ Tracks cumulative input/output tokens and estimated dollar costs using
 provider model metadata and reported response usage when available.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TypedDict
 
@@ -185,9 +186,15 @@ def extract_usage_from_response(response_data: dict) -> UsageDelta:
     input_cost, output_cost from headers — splat-safe into add_usage().
     """
     usage = response_data.get("usage") or {}
-    cache_read_tokens = usage.get(
-        "cache_read_input_tokens", usage.get("prompt_cache_hit_tokens", 0)
+    cache_read_tokens = usage.get("cache_read_input_tokens") or usage.get(
+        "prompt_cache_hit_tokens", 0
     )
+    prompt_details = usage.get("prompt_tokens_details")
+    if not cache_read_tokens and isinstance(prompt_details, Mapping):
+        cached_tokens = prompt_details.get("cached_tokens")
+        if type(cached_tokens) is int and cached_tokens >= 0:
+            cache_read_tokens = cached_tokens
+    cache_read_tokens = cache_read_tokens or 0
     cache_write_tokens = usage.get(
         "cache_creation_input_tokens", usage.get("prompt_cache_miss_tokens", 0)
     )

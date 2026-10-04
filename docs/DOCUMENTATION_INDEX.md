@@ -1,7 +1,8 @@
 # Nova Agent — Documentation Index
 
-**Last Updated:** August 2026
+**Last Updated:** October 2026
 **Status:** ✅ Active
+**Type:** GUIDE (Documentation Index)
 **Maintainer:** [Eidolon Labs LLC](https://github.com/eidolonlabs-ai)
 
 > Systematic inventory of all Nova Agent documentation.
@@ -58,6 +59,7 @@
 | [SPEC-001-HARNESS_ENGINEERING](SPEC-001-HARNESS_ENGINEERING.md) | ✅ Active | Harness engineering: verification, acceptance states, unified traces, and optional Langfuse telemetry |
 | [SPEC-002-ACP_INTEGRATION](SPEC-002-ACP_INTEGRATION.md) | 📋 Planned | ACP editor parity: client MCP servers, session management, UX features, remote transports |
 | [SPEC-003-NOVA_SDK_PUBLIC_API](SPEC-003-NOVA_SDK_PUBLIC_API.md) | 📋 Planned | Public API surface: NovaAgent, typed options/events, harness traces, stores, PyPI |
+| [SPEC-004-STASH_RECOVERY_PLAN](SPEC-004-STASH_RECOVERY_PLAN.md) | ✅ Implemented | Updater and nested cache-usage fixes, verification evidence, and pending integration |
 
 ---
 
@@ -136,3 +138,11 @@ Skills live in `config/skills/` — copy to `~/.nova/skills/` to activate.
 3. **Context too long / compaction** → See [GUIDE-011-CONTEXT_COMPRESSION](GUIDE-011-CONTEXT_COMPRESSION.md) — adjust active context and retrieval settings
 4. **MCP server not appearing** → See [GUIDE-007-MCP_INTEGRATION](GUIDE-007-MCP_INTEGRATION.md#troubleshooting)
 5. **Skills not loading** → Check `~/.nova/skills/<name>/SKILL.md` exists with valid YAML frontmatter
+
+## Related Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [Project Overview](../README.md) | Installation and project entry point |
+| [Contribution Guide](../CONTRIBUTING.md) | Development workflow |
+| [Stash Recovery Plan](SPEC-004-STASH_RECOVERY_PLAN.md) | Verified pending fixes and implementation steps |

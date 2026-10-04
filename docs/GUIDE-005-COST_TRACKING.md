@@ -1,7 +1,7 @@
 # Cost Tracking
 
 **Status:** ✅ Active  
-**Last Updated:** May 2026  
+**Last Updated:** October 2026
 **Type:** GUIDE (Feature Reference)
 
 > Nova Agent tracks token usage and estimates dollar costs for each session, helping you monitor spending across different models.
@@ -100,6 +100,13 @@ usage = extract_usage_from_response(response)
 ```
 
 ---
+
+Nested `usage.prompt_tokens_details.cached_tokens` counts are recognized in both
+streaming and non-streaming responses. Existing nonzero top-level cache-read
+counts take precedence. Cached tokens remain part of the input-token total;
+they are not added again. When provider metadata supplies cache pricing, these
+counts contribute to the discounted cost estimate. A provider-reported total
+cost remains authoritative. Missing or malformed nested cache details are ignored.
 
 ## Related Documentation
 

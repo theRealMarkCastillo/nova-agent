@@ -2,8 +2,11 @@
 
 from unittest.mock import MagicMock
 
+import pytest
 from openai import OpenAI
+from openai.types.completion_usage import CompletionUsage
 
+from nova.cost_tracker import extract_usage_from_response
 from nova.providers import (
     build_client,
     chat_completion,
@@ -164,3 +167,30 @@ def test_stream_response_empty_stream(mock_openai_client):
         {"model": "test-model", "messages": [], "temperature": 0.7, "top_p": 1.0},
     )
     assert result["choices"][0]["message"]["content"] is None
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_provider_preserves_nested_cache_usage(mock_openai_client, streaming):
+    usage = CompletionUsage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        total_tokens=105,
+        prompt_tokens_details={"cached_tokens": 90},
+    )
+    payload = {"model": "test-model", "messages": []}
+    if streaming:
+        final_chunk = MagicMock(choices=[], usage=usage)
+        mock_openai_client.chat.completions.create.return_value = make_mock_stream(
+            make_text_chunk("Hello"), final_chunk
+        )
+        response = stream_response(mock_openai_client, payload)
+    else:
+        result = MagicMock(usage=usage)
+        result.choices = [MagicMock()]
+        result.choices[0].message.tool_calls = None
+        mock_openai_client.chat.completions.create.return_value = result
+        response = chat_completion(mock_openai_client, payload)
+    extracted = extract_usage_from_response(response)
+    assert extracted["input_tokens"] == 100
+    assert extracted["cache_read_tokens"] == 90
+    assert extracted["output_tokens"] == 5
