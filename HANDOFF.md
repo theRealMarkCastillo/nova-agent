@@ -1,16 +1,16 @@
 # ACTIVE WORKSTREAM HANDOFF
 
-**Status:** ✅ Implementation complete
+**Status:** ✅ Integrated into main
 **Last Updated:** October 2026
 **Type:** REPORT (Session Handoff)
 
 - **Workstream:** Recover external virtualenv updates and nested cache accounting
-- **Active Branch:** `fix/updater-and-cache-usage`
+- **Active Branch:** `main`
 - **Current Status:** COMPLETE
 
 ## 1. Ground Truth & State
 
-Implemented the two relevant fixes identified in [SPEC-004](docs/SPEC-004-STASH_RECOVERY_PLAN.md), preserving the prior planning documents. Reviewed the final changes with no remaining findings. Merge and push were not requested for this implementation turn; both saved stashes remain intact.
+Implemented the two relevant fixes identified in [SPEC-004](docs/SPEC-004-STASH_RECOVERY_PLAN.md), preserving the prior planning documents. Reviewed the final changes with no remaining findings. The user subsequently authorized merge and push. Fast-forwarded `main` to include `dc5b715` and `b8bfa25`; both saved stashes remain intact. Remote `main` was refreshed and confirmed to be an ancestor before integration.
 
 Exact files touched:
 - `nova/cli.py`: use the running virtualenv interpreter, preserving its symlink path, then fall back to repository `.venv` / `venv`; show the selected interpreter.
@@ -41,7 +41,7 @@ Retained history:
 
 ## 2. Active Hypothesis & Blockers
 
-None for implementation. Merge/push and stash retirement remain separate delivery actions. If delivery is requested, inspect `git diff main...fix/updater-and-cache-usage` and refresh remote state first; retain the mixed stash until any authorized cleanup preserves its deferred content.
+None. This delivery changes only documentation beyond the tested implementation; lint and diff checks pass. Stash retirement remains a separate cleanup action; retain the mixed stash until authorized cleanup preserves its deferred content.
 
 ## 3. Immediate Next Action (Start Here)
 

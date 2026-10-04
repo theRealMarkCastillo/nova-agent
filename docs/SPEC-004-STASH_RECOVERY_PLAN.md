@@ -1,16 +1,17 @@
 # SPEC-004: Recover Remaining Updater and Cache-Usage Fixes
 
-**Status:** ✅ Implemented; integration pending
+**Status:** ✅ Integrated into main
 **Last Updated:** October 2026
 **Type:** SPEC (Implementation Plan)
 
 ## Implementation Outcome
 
-Both selected fixes are implemented on `fix/updater-and-cache-usage`. Regression
+Both selected fixes were implemented on `fix/updater-and-cache-usage` and merged
+into `main` after the user authorized delivery. Regression
 checks reproduced the original failures before the code changes. The focused
 suite now passes 105 tests; the full suite passes 1302 tests with 84.68% coverage.
 Ruff lint, formatting, and mypy also pass. Neither stash was applied wholesale or dropped;
-merge, push, and stash retirement remain pending. The original audit and planned
+stash retirement remains a separate cleanup action. The original audit and planned
 sequence below document why only these changes were selected.
 
 ## Verified Scope
