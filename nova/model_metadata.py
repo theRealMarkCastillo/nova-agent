@@ -6,6 +6,8 @@ from typing import Any
 # Conservative fallback when the provider does not report a context window.
 # A too-large default silently disables compaction and produces hard API 400s
 # on small-context models; 128k is safe for the vast majority of models.
+# Users with larger models (e.g. 1M-token Gemini) can raise this per-run via
+# the ``llm.context_window`` config override without changing the safe default.
 DEFAULT_CONTEXT_WINDOW = 128_000
 
 
@@ -99,8 +101,16 @@ def get_model_metadata(model: str) -> ModelMetadata | None:
     return _MODEL_METADATA[best_key] if best_key is not None else None
 
 
-def get_model_context_window(model: str) -> int:
-    """Return the provider-reported context window, or a 1M-token default."""
+def get_model_context_window(model: str, override: int | None = None) -> int:
+    """Return the effective context window for a model.
+
+    Priority: an explicit ``override`` (from ``llm.context_window`` config),
+    then provider-reported metadata, then ``DEFAULT_CONTEXT_WINDOW``. A
+    positive override wins so users can opt into large windows (e.g. 1M)
+    even when the provider reports a smaller or missing value.
+    """
+    if override and override > 0:
+        return override
     metadata = get_model_metadata(model)
     return (
         metadata.context_window if metadata and metadata.context_window else DEFAULT_CONTEXT_WINDOW

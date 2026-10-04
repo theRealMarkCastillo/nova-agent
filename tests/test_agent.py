@@ -453,11 +453,13 @@ def test_compaction_injects_recovery_note(minimal_config, mock_session_store, mo
         openai_client=mock_openai_client,
         session_store=mock_session_store,
     )
+    agent._system_prompt = "Test agent"
+    agent._get_tool_definitions = lambda: []
     for i in range(10):
         agent.messages.append({"role": "user", "content": f"msg {i} " * 100})
         agent.messages.append({"role": "assistant", "content": f"reply {i} " * 100})
 
-    with patch("nova.agent.get_model_context_window", return_value=10000):
+    with patch("nova.agent.get_model_context_window", return_value=3000):
         agent.run("latest message", stream=False)
 
     sent = mock_openai_client.chat.completions.create.call_args.kwargs["messages"]
@@ -705,3 +707,39 @@ def test_agent_prompt_mode_respected_for_subagent(
 
     assert agent._system_prompt is not None
     assert "<skills>" not in (agent._system_prompt or "")
+
+
+def test_context_window_override_flows_to_lookup(
+    minimal_config, mock_session_store, mock_openai_client
+):
+    """llm.context_window config is passed as the override to the window lookup."""
+    minimal_config["llm"]["context_window"] = 1_000_000
+    mock_openai_client.chat.completions.create.return_value = make_openai_response(content="OK")
+
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=mock_openai_client,
+        session_store=mock_session_store,
+    )
+    with patch("nova.agent.get_model_context_window", return_value=1_000_000) as lookup:
+        agent.run("hello", stream=False)
+
+    lookup.assert_called_once_with("test-model", override=1_000_000)
+
+
+@pytest.mark.parametrize("model, compacts", [("test-model", False), ("review-small-model", True)])
+def test_model_switch_uses_new_window_for_compaction(agent, model, compacts):
+    from nova.command_handlers import cmd_model
+
+    agent.config["llm"]["context_window"] = 1000000
+    messages = [{"role": "user", "content": "current request"}]
+    with patch("nova.display._cprint"):
+        cmd_model(agent, model)
+    with (
+        patch("nova.agent.estimate_total_request_tokens", side_effect=[200000, 0, 10, 10]),
+        patch("nova.agent.compact_to_token_budget", return_value=messages) as compact,
+    ):
+        agent._compact_if_needed(messages, tools=[])
+    assert compact.called is compacts
+    if compacts:
+        assert compact.call_args.kwargs["max_tokens"] == 128000 - 8192 - 1024

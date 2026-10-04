@@ -22,6 +22,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from nova.config import set_model
 from nova.tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ def _build_subagent_config(
 
     # Override model if specified
     if model:
-        config["llm"]["model"] = model
+        set_model(config, model)
 
     # Set sub-agent depth
     config["_subagent_depth"] = depth

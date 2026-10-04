@@ -40,6 +40,22 @@ def test_unknown_model_default():
     assert get_model_context_window("some-random-model") == DEFAULT_CONTEXT_WINDOW
 
 
+def test_override_beats_provider_reported():
+    load_provider_metadata(_Client([{"id": "test/model", "context_length": 128_000}]))
+    assert get_model_context_window("test/model", override=1_000_000) == 1_000_000
+
+
+def test_override_beats_fallback():
+    assert get_model_context_window("some-random-model", override=512_000) == 512_000
+
+
+def test_override_zero_or_none_uses_defaults():
+    load_provider_metadata(_Client([{"id": "test/model", "context_length": 200_000}]))
+    assert get_model_context_window("test/model", override=0) == 200_000
+    assert get_model_context_window("test/model", override=None) == 200_000
+    assert get_model_context_window("some-random-model", override=0) == DEFAULT_CONTEXT_WINDOW
+
+
 def test_load_provider_metadata_reads_pricing():
     load_provider_metadata(
         _Client(

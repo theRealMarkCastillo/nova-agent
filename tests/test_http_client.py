@@ -145,7 +145,7 @@ class TestHttpGet:
         result = _http_get({"url": "https://example.com/api"})
         assert '"ok": true' in result
 
-    def test_http_get_headers_not_object(self):
+    def test_http_get_headers_not_object(self, mock_conn):
         """Non-object headers must fail cleanly."""
         result = _http_get({"url": "https://example.com/api", "headers": ["nope"]})
         assert "Error:" in result
@@ -169,7 +169,7 @@ class TestHttpPost:
         assert json.loads(request_body) == {"name": "test"}
         assert headers["Content-Type"] == "application/json"
 
-    def test_http_post_invalid_json_body(self):
+    def test_http_post_invalid_json_body(self, mock_conn):
         """Test POST with invalid JSON body."""
         result = _http_post({"url": "https://example.com/api", "body": "not json"})
         assert "Error:" in result
@@ -214,7 +214,7 @@ class TestHttpDelete:
 class TestTimeoutValidation:
     """Tests for timeout validation."""
 
-    def test_invalid_timeout_too_high(self):
+    def test_invalid_timeout_too_high(self, mock_conn):
         """Test timeout exceeding max."""
         result = _http_get({"url": "https://example.com/api", "timeout": 301})
         assert "Error:" in result
@@ -225,7 +225,7 @@ class TestTimeoutValidation:
         result = _http_get({"url": "https://example.com/api", "timeout": -1})
         assert "Error:" in result
 
-    def test_invalid_timeout_string(self):
+    def test_invalid_timeout_string(self, mock_conn):
         """Test non-numeric timeout."""
         result = _http_get({"url": "https://example.com/api", "timeout": "abc"})
         assert "Error:" in result

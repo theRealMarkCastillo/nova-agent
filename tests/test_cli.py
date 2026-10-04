@@ -546,3 +546,45 @@ class TestCmdSetup:
 
         captured = capsys.readouterr()
         assert "Setup complete!" in captured.out
+
+
+@pytest.mark.parametrize("command", ["model", "resume"])
+def test_chat_refreshes_window_after_model_change(agent, command):
+    from nova.cli import _chat_loop
+    from nova.model_metadata import DEFAULT_CONTEXT_WINDOW
+
+    agent.config["llm"]["context_window"] = 1000000
+    argument = "review-small-model"
+    if command == "resume":
+        argument = agent.session_store.create_session(model=argument)
+    with (
+        patch("nova.display.NovaTUI") as tui_class,
+        patch("nova.display.print_banner"),
+        patch("nova.display._cprint"),
+    ):
+        tui = tui_class.return_value
+        tui.run.side_effect = lambda callback: callback(f"/{command} {argument}")
+        _chat_loop(agent)
+    assert tui_class.call_args.kwargs["context_window"] == 1000000
+    assert tui.model_short == "review-small-model"
+    assert tui.context_window == DEFAULT_CONTEXT_WINDOW
+
+
+@pytest.mark.parametrize("change, expected", [(False, 1000000), (True, 0)])
+def test_setup_scopes_existing_context_window(tmp_path, change, expected):
+    import yaml
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {"llm": {"api_key": "test-key", "model": "large", "context_window": 1000000}}
+        )
+    )
+    answers = ["y", "small"] if change else ["N"]
+    with (
+        patch("nova.cli.ensure_nova_home", return_value=tmp_path),
+        patch.dict("os.environ", {}, clear=True),
+        patch("builtins.input", side_effect=answers),
+    ):
+        cmd_setup(MagicMock())
+    assert yaml.safe_load(path.read_text())["llm"]["context_window"] == expected

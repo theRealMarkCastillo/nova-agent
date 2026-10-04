@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from openai import OpenAI
 
 from nova.agent import NovaAgent
@@ -695,3 +696,15 @@ def test_register_delegate_tool_depth_limit_logging(caplog):
 
     assert "delegate_task" not in local_registry.all_tool_names
     assert any("leaf agent" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "model, expected", [(None, 1000000), ("test-model", 1000000), ("small", 0)]
+)
+def test_delegated_model_scopes_context_override(minimal_config, model, expected):
+    from nova.tools.delegate_tool import _build_subagent_config
+
+    minimal_config["llm"]["context_window"] = 1000000
+    child = _build_subagent_config(minimal_config, 1, model, 5)
+    assert child["llm"]["context_window"] == expected
+    assert minimal_config["llm"]["context_window"] == 1000000

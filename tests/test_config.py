@@ -304,3 +304,53 @@ def test_no_config_uses_defaults():
         ):
             config = load_config()
             assert config["agent"]["max_iterations"] == 50
+
+
+@pytest.mark.parametrize("value", [True, False, -1, 1.5, "1000000", None])
+def test_context_window_rejects_invalid_yaml(value, tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.setattr("nova.config.get_nova_home", lambda: tmp_path / ".nova")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"llm": {"context_window": value}}))
+    with pytest.raises(ConfigError, match="context_window"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", [0, 128000, 1000000])
+def test_context_window_accepts_nonnegative_integers(value, tmp_path, monkeypatch):
+    monkeypatch.setattr("nova.config.get_nova_home", lambda: tmp_path / ".nova")
+    path = tmp_path / "config.yaml"
+    path.write_text(f"llm:\n  context_window: {value}\n")
+    assert load_config(path)["llm"]["context_window"] == value
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ({"model": "small"}, 0),
+        ({"model": "large"}, 1000000),
+        ({"max_tokens": 100}, 1000000),
+        ({"model": "small", "context_window": 128000}, 128000),
+    ],
+)
+def test_layered_model_config_scopes_context_window(override, expected):
+    base = {"llm": {"model": "large", "context_window": 1000000}}
+    merged = _deep_merge(base, {"llm": override})
+    assert merged["llm"]["context_window"] == expected
+    assert base["llm"]["context_window"] == 1000000
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_project_model_drops_global_window(tmp_path, monkeypatch, legacy):
+    home = tmp_path / ".nova"
+    home.mkdir()
+    (home / "config.yaml").write_text("llm:\n  model: large\n  context_window: 1000000\n")
+    path = tmp_path / "config.yaml"
+    section = "openrouter" if legacy else "llm"
+    path.write_text(f"{section}:\n  model: small\n")
+    monkeypatch.setattr("nova.config.get_nova_home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+    config = load_config()
+    assert config["llm"]["model"] == "small"
+    assert config["llm"]["context_window"] == 0

@@ -1,7 +1,7 @@
 # Customizing Nova Agent
 
 **Status:** ✅ Active  
-**Last Updated:** August 2026  
+**Last Updated:** October 2026
 **Type:** GUIDE (Comprehensive Reference)
 
 > Nova Agent is designed to be personalized. This guide covers every way you can customize it.
@@ -52,7 +52,19 @@ llm:
   # model: "anthropic/claude-opus-4-20250514"    # Most capable
   # model: "google/gemini-2.5-pro"               # Large context window
   # model: "openai/gpt-4.1"                      # Good all-rounder
+  context_window: 0                    # 0 = auto (provider-reported, else 128k).
+                                       # Set explicitly, e.g. 1_000_000, for
+                                       # 1M-token models whose provider doesn't
+                                       # report a context window. Overrides the
+                                       # provider value when positive.
 ```
+
+The override must be a non-negative integer; booleans are rejected. It applies to
+one model. Switching models with `/model`, resuming a session using another model,
+changing the model during setup, or delegating to another model resets it to `0`
+(auto). Same-model operations preserve it. When a project config selects a
+different model from the global config, specify a new `context_window` in that
+project config if needed; the global override is not inherited.
 
 ### Token Budgets
 

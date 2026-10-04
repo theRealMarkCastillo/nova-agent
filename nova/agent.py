@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Literal
 
-from nova.config import ensure_nova_home, load_config
+from nova.config import ensure_nova_home, load_config, set_model
 from nova.cost_tracker import CostTracker, extract_usage_from_response
 from nova.harness import HarnessTrace, VerificationResult, derive_run_status
 from nova.hooks import (
@@ -277,7 +277,7 @@ class NovaAgent:
         info = self.session_store.get_session_info(self.session_id)
         if info:
             if info.get("model"):
-                self.config["llm"]["model"] = info["model"]
+                set_model(self.config, info["model"])
             # Load recent messages only — respect conversation turn limit
             turn_limit = self.config["budgets"].get("conversation_turn_limit", 15)
             self.messages = self.session_store.get_messages(
@@ -925,7 +925,10 @@ class NovaAgent:
         target budget is halved to shed context aggressively.
         """
         total_tokens = estimate_total_request_tokens(api_messages, tools=tools)
-        context_window = get_model_context_window(self.config["llm"]["model"])
+        context_window = get_model_context_window(
+            self.config["llm"]["model"],
+            override=self.config["llm"].get("context_window") or None,
+        )
         response_reserve = max(1024, int(self.config["llm"].get("max_tokens", 8192)))
         safety_margin = 1024
         active_budget = max(1, context_window - response_reserve - safety_margin)

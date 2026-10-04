@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from nova.command_handlers import (
     _HANDLERS,
     dispatch_command,
@@ -535,3 +537,21 @@ def test_dispatch_skill_with_mixed_case_resolves(agent, tmp_path):
     with patch("nova.display._cprint"):
         result = dispatch_command("My-Skill", agent, "")
     assert result is True
+
+
+@pytest.mark.parametrize("model, expected", [("test-model", 1000000), ("small", 0)])
+def test_model_switch_scopes_context_override(agent, model, expected):
+    agent.config["llm"]["context_window"] = 1000000
+    with patch("nova.display._cprint"):
+        dispatch_command("model", agent, model)
+    assert agent.config["llm"]["context_window"] == expected
+
+
+@pytest.mark.parametrize("model, expected", [("test-model", 1000000), ("small", 0)])
+def test_resume_scopes_context_override(agent, model, expected):
+    agent.config["llm"]["context_window"] = 1000000
+    session_id = agent.session_store.create_session(model=model)
+    with patch("nova.display._cprint"):
+        dispatch_command("resume", agent, session_id)
+    assert agent.config["llm"]["model"] == model
+    assert agent.config["llm"]["context_window"] == expected

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from nova.agent import NovaAgent
-from nova.config import ensure_nova_home, load_config
+from nova.config import ensure_nova_home, load_config, set_model
 from nova.model_metadata import get_model_context_window
 from nova.tokens import estimate_total_request_tokens
 
@@ -74,7 +74,10 @@ def _chat_loop(agent):
         print_message_history(agent.messages)
 
     model = agent.config["llm"]["model"]
-    context_window = get_model_context_window(model)
+    context_window = get_model_context_window(
+        model,
+        override=agent.config.get("llm", {}).get("context_window") or None,
+    )
     tui = NovaTUI(model=model, context_window=context_window, config=agent.config)
     agent._reasoning_callback = None
     agent._confirmation_callback = lambda name, arguments: _confirm_tool(
@@ -93,6 +96,16 @@ def _chat_loop(agent):
             cmd_args = parts[1] if len(parts) > 1 else ""
 
             if dispatch_command(cmd_name, agent, cmd_args):
+                current_model = agent.config["llm"]["model"]
+                tui.model_short = current_model.split("/")[-1]
+                tui.context_window = get_model_context_window(
+                    current_model, override=agent.config["llm"].get("context_window") or None
+                )
+                tui.update_context(
+                    estimate_total_request_tokens(
+                        agent.messages, system_prompt=agent._system_prompt or ""
+                    )
+                )
                 return
 
             # Unknown/unhandled slash command — send as message to agent
@@ -303,7 +316,7 @@ def cmd_setup(args):
     config = existing_config
     config.setdefault("llm", {})
     config["llm"]["api_key"] = api_key
-    config["llm"]["model"] = model
+    set_model(config, model)
 
     # Write config atomically (temp file + rename to prevent corruption)
     import tempfile

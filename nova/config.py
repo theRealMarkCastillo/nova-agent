@@ -17,6 +17,10 @@ DEFAULT_CONFIG = {
         "model": "qwen/qwen3.6-flash",
         "base_url": "https://openrouter.ai/api/v1",
         "max_tokens": 8192,
+        # 0 = auto: use provider-reported context window, else the 128k
+        # fallback. Set explicitly (e.g. 1_000_000 for 1M-token models)
+        # to override what the provider reports.
+        "context_window": 0,
     },
     "web": {
         "enabled": True,
@@ -122,6 +126,13 @@ class ConfigError(ValueError):
     """Raised when configuration values cannot be used safely."""
 
 
+def set_model(config: dict[str, Any], model: str) -> None:
+    llm = config.setdefault("llm", {})
+    if llm.get("model") != model:
+        llm["context_window"] = 0
+    llm["model"] = model
+
+
 def _validate_config(config: dict[str, Any]) -> None:
     """Validate resource and model controls before they reach the agent loop."""
     sections = ("llm", "agent", "budgets", "microcompact", "retry")
@@ -141,6 +152,8 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise ConfigError("llm.base_url must be a string")
     if not isinstance(llm.get("max_tokens", 8192), int) or llm.get("max_tokens", 8192) < 1:
         raise ConfigError("llm.max_tokens must be a positive integer")
+    if type(llm.get("context_window", 0)) is not int or llm.get("context_window", 0) < 0:
+        raise ConfigError("llm.context_window must be a non-negative integer (0 = auto)")
     if not isinstance(agent.get("max_iterations"), int) or not 1 <= agent["max_iterations"] <= 1000:
         raise ConfigError("agent.max_iterations must be an integer between 1 and 1000")
     for name, low, high in (("temperature", 0.0, 2.0), ("top_p", 0.0, 1.0)):
@@ -274,6 +287,14 @@ def _deep_resolve(config: dict[str, Any]) -> dict[str, Any]:
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep merge override into base."""
     result = base.copy()
+    if (
+        "llm" in override
+        and isinstance(override["llm"], dict)
+        and isinstance(base.get("llm"), dict)
+        and "model" in override["llm"]
+        and override["llm"]["model"] != base["llm"].get("model")
+    ):
+        result["llm"] = {**base["llm"], "context_window": 0}
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
@@ -372,7 +393,7 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     if "openrouter" in config:
         old: dict[str, Any] = config.pop("openrouter")  # type: ignore[assignment]
         existing: dict[str, Any] = config.get("llm", {})  # type: ignore[assignment]
-        config["llm"] = _deep_merge(existing, old)
+        config["llm"] = _deep_merge({"llm": existing}, {"llm": old})["llm"]
 
     # Ensure API key from env var if not in config
     # Accept LLM_API_KEY (preferred) or OPENROUTER_API_KEY (legacy)
