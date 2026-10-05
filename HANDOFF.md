@@ -31,7 +31,7 @@ Validation at HEAD:
 - No paid provider calls, network access, or real MCP servers were used. The M4 migration was verified on a backup copy of a real database; the original was not modified, and the copy was deleted.
 - Not exercised: the interactive CLI against a live model.
 
-Retained history from earlier workstreams: stashes `stash@{0}` (`533f21d`) and `stash@{1}` (`023ec2d`) remain intact pending authorized cleanup; the archived worktree bundle remains under `.git/cleanup-archives/`.
+Repository cleanup: no extra worktrees exist. The five merged local branches were deleted. Both stashes (`533f21d`, `023ec2d`) were dropped at the maintainer's request: their useful changes were already on `main` (`dc5b715`, `b8bfa25`), and the rest was obsolete or deliberately not ported (see SPEC-004). The archived worktree bundle remains under `.git/cleanup-archives/`.
 
 ## 2. Active Hypothesis & Blockers
 
