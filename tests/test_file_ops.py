@@ -1,5 +1,7 @@
 """Tests for file operations tool."""
 
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -474,3 +476,49 @@ class TestPatchFile:
                 }
             )
             assert "not found" in result.lower()
+
+
+class TestAtomicWritePreservation:
+    def test_patch_preserves_executable_mode(self, tmp_path):
+        script = tmp_path / "run.sh"
+        script.write_text("echo hi\n")
+        script.chmod(0o755)
+
+        result = _patch_file(
+            {"path": str(script), "old_string": "hi", "new_string": "bye"}, workspace=tmp_path
+        )
+
+        assert result.startswith("Successfully patched")
+        assert stat.S_IMODE(script.stat().st_mode) == 0o755
+
+    def test_write_preserves_existing_mode(self, tmp_path):
+        script = tmp_path / "run.sh"
+        script.write_text("old\n")
+        script.chmod(0o750)
+
+        _write_file({"path": str(script), "content": "new\n"}, workspace=tmp_path)
+
+        assert stat.S_IMODE(script.stat().st_mode) == 0o750
+
+    def test_new_file_respects_umask(self, tmp_path):
+        path = tmp_path / "new.txt"
+
+        _write_file({"path": str(path), "content": "x"}, workspace=tmp_path)
+
+        umask = os.umask(0)
+        os.umask(umask)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o666 & ~umask
+
+    def test_write_through_symlink_keeps_link(self, tmp_path):
+        target = tmp_path / "real.txt"
+        target.write_text("old")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target)
+
+        _write_file({"path": str(link), "content": "new"}, workspace=tmp_path)
+        _patch_file(
+            {"path": str(link), "old_string": "new", "new_string": "newer"}, workspace=tmp_path
+        )
+
+        assert link.is_symlink()
+        assert target.read_text() == "newer"

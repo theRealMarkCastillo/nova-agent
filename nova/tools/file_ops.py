@@ -7,6 +7,7 @@ and targeted patching with search/replace.
 import hashlib
 import logging
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,31 @@ _MAX_WRITE_CHARS = 500000  # 500KB max write
 _MAX_PATCH_CHARS = 100000  # 100KB max patch string
 
 
+# Read once at import: os.umask can only be queried by setting it, which is
+# not thread-safe once tool calls run concurrently.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Replace a file's content atomically, keeping its mode and any symlink."""
+    target = path.resolve()
+    try:
+        mode = stat.S_IMODE(target.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o666 & ~_UMASK
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, target)
+    except Exception:
+        os.unlink(tmp_path)
+        raise
+
+
 def _is_path_safe(path: Path, **kwargs: Any) -> str | None:
     """Check if a path is safe to access. Returns error message or None if safe."""
     return path_safety_error(path, **kwargs)
@@ -233,17 +259,7 @@ def _write_file(args: dict[str, Any], **kwargs: Any) -> str:
         return f"Error: Content too large (max {_MAX_WRITE_CHARS:,} chars, got {len(content):,})."
 
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Atomic write via temp file
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, path)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
+        _atomic_write(path, content)
 
         lines = content.count("\n") + 1
         return f"Successfully wrote {lines:,} lines to {path}"
@@ -289,15 +305,7 @@ def _patch_file(args: dict[str, Any], **kwargs: Any) -> str:
 
         new_content = content.replace(old_string, new_string, 1)
 
-        # Atomic write — same pattern as _write_file to avoid partial writes
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            os.replace(tmp_path, path)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
+        _atomic_write(path, new_content)
 
         return f"Successfully patched {path}"
 
