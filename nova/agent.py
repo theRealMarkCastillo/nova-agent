@@ -591,6 +591,23 @@ class NovaAgent:
             command=command,
             untrusted_context=self._untrusted_content_seen,
         )
+        if (
+            perm_result.allowed
+            and not perm_result.requires_confirmation
+            and entry is not None
+            and entry.always_confirm is not None
+        ):
+            try:
+                reason = entry.always_confirm(arguments, wiki=self.wiki)
+            except Exception:
+                logger.exception("always_confirm check failed for %s", name)
+                reason = "could not be checked for safety"
+            if reason:
+                perm_result = PermissionResult(
+                    allowed=True,
+                    requires_confirmation=True,
+                    reason=f"Tool '{name}' {reason}",
+                )
         self.observability.policy(name, allowed=perm_result.allowed, reason=perm_result.reason)
 
         if not perm_result.allowed:

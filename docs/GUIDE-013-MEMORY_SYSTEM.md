@@ -107,6 +107,8 @@ Notes in `Core/` are **special**: their **full content** is injected into every 
 
 **Keep `Core/` short.** Every line there costs tokens on every turn. Use it for facts the agent should *always* know without searching.
 
+**Changes that reach every prompt need confirmation, even in `auto` mode.** These are: writing, appending to, or patching a `Core/` or pinned note; pinning a note; renaming a note into `Core/`; and vault-wide `replace`. They prompt even when `wiki` is in `allowed_tools`. Without an interactive confirmation (for example a script with no TTY), they are denied. Ordinary notes are unaffected.
+
 **Injected notes are scanned.** `Core/` notes and notes with `inject: true` are checked for prompt-injection patterns each time the prompt is built. A flagged note is replaced by a `[BLOCKED: …]` placeholder in the prompt; the file itself is left unchanged so you can review it. This keeps an instruction that the agent was tricked into saving from persisting into every later session. It is a pattern check, not a guarantee, so review what gets written to `Core/`.
 
 ---

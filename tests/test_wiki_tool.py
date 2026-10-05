@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nova.tools.wiki_tool import _wiki_tool
+from nova.tools.wiki_tool import _prompt_wide_change, _wiki_tool
 from nova.wiki_memory import WikiMemory
 
 
@@ -595,3 +595,41 @@ def test_pin_missing_title(wiki: WikiMemory):
 def test_unpin_missing_title(wiki: WikiMemory):
     result = _wiki_tool({"action": "unpin"}, wiki=wiki)
     assert "Error" in result
+
+
+class TestPromptWideChanges:
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"action": "write", "title": "Core/Rules", "content": "x"},
+            {"action": "write", "title": "core/rules", "content": "x"},
+            {"action": "append", "title": "Core/Rules", "content": "x"},
+            {"action": "patch", "title": "Core/Rules", "old_text": "a", "new_text": "b"},
+            {"action": "pin", "title": "Ideas"},
+            {"action": "rename", "title": "Ideas", "new_title": "Core/Ideas"},
+            {"action": "replace", "old_text": "a", "new_text": "b"},
+        ],
+    )
+    def test_changes_reaching_every_prompt_are_flagged(self, wiki, args):
+        assert _prompt_wide_change(args, wiki=wiki)
+
+    def test_edit_to_pinned_note_is_flagged(self, wiki):
+        wiki.write("Ideas", "draft")
+        wiki.pin("Ideas")
+        assert _prompt_wide_change(
+            {"action": "append", "title": "Ideas", "content": "more"}, wiki=wiki
+        )
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"action": "write", "title": "Projects/nova", "content": "x"},
+            {"action": "read", "title": "Core/Rules"},
+            {"action": "unpin", "title": "Ideas"},
+            {"action": "delete", "title": "Core/Rules"},
+            {"action": "rename", "title": "Core/Old", "new_title": "Archive/Old"},
+            {"action": "add_tag", "title": "Core/Rules", "tag": "x"},
+        ],
+    )
+    def test_other_actions_are_not_flagged(self, wiki, args):
+        assert _prompt_wide_change(args, wiki=wiki) is None

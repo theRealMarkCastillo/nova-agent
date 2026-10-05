@@ -596,3 +596,52 @@ def test_close_leaves_injected_mcp_client_connected(minimal_config, mock_session
     agent.close()
 
     shared.disconnect_all.assert_not_called()
+
+
+def _wiki_agent(minimal_config, mock_session_store, tmp_path, confirm):
+    from nova.wiki_memory import WikiMemory
+
+    minimal_config["permissions"] = {"mode": "auto"}
+    return NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        wiki_memory_store=WikiMemory(tmp_path / "wiki"),
+        workspace=tmp_path,
+        confirmation_callback=confirm,
+    )
+
+
+def _wiki_call(title: str) -> dict:
+    return {
+        "id": "w",
+        "function": {
+            "name": "wiki",
+            "arguments": json.dumps({"action": "write", "title": title, "content": "x"}),
+        },
+    }
+
+
+def test_core_note_write_needs_confirmation_in_auto_mode(
+    minimal_config, mock_session_store, tmp_path
+):
+    confirm = MagicMock(return_value=False)
+    agent = _wiki_agent(minimal_config, mock_session_store, tmp_path, confirm)
+
+    result = agent._execute_tool_call(_wiki_call("Core/Rules"))
+
+    assert "requires confirmation" in result
+    assert confirm.call_count == 1
+    assert not (tmp_path / "wiki" / "Core" / "Rules.md").exists()
+
+
+def test_ordinary_note_write_needs_no_confirmation_in_auto_mode(
+    minimal_config, mock_session_store, tmp_path
+):
+    confirm = MagicMock(return_value=False)
+    agent = _wiki_agent(minimal_config, mock_session_store, tmp_path, confirm)
+
+    result = agent._execute_tool_call(_wiki_call("Projects/nova"))
+
+    assert "requires confirmation" not in result
+    confirm.assert_not_called()

@@ -83,6 +83,21 @@ class WikiMemory:
             path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
+    def reaches_every_prompt(self, title: str) -> bool:
+        """Whether a note's full content is injected into every system prompt."""
+        try:
+            path = self._note_path(title, create_parent=False)
+        except ValueError:
+            return False
+        parts = path.relative_to(self.vault_path).parts
+        # Case-insensitive: on macOS "core/x" lands in an existing Core/ folder.
+        if len(parts) > 1 and parts[0].lower() == "core":
+            return True
+        try:
+            return path.is_file() and bool(self._parse_note(path)["frontmatter"].get("inject"))
+        except (OSError, UnicodeError):
+            return False
+
     def _parse_note(self, path: Path) -> dict:
         return self._parse_note_text(path.read_text(encoding="utf-8", errors="replace"))
 

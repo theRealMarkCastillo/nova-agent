@@ -56,6 +56,7 @@ class ToolEntry:
         "emoji",
         "is_read_only",
         "verifier",
+        "always_confirm",
     )
 
     def __init__(
@@ -69,6 +70,7 @@ class ToolEntry:
         emoji: str = "🔧",
         is_read_only: bool = False,
         verifier: Callable | None = None,
+        always_confirm: Callable[..., str | None] | None = None,
     ):
         self.name = name
         self.toolset = toolset
@@ -79,6 +81,8 @@ class ToolEntry:
         self.emoji = emoji
         self.is_read_only = is_read_only
         self.verifier = verifier
+        # Returns a reason when a call needs confirmation even in auto mode.
+        self.always_confirm = always_confirm
 
 
 class ToolRegistry:
@@ -98,6 +102,7 @@ class ToolRegistry:
         emoji: str = "🔧",
         is_read_only: bool = False,
         verifier: Callable | None = None,
+        always_confirm: Callable[..., str | None] | None = None,
     ):
         """Register a tool."""
         existing = self._tools.get(name)
@@ -115,6 +120,7 @@ class ToolRegistry:
             emoji=emoji,
             is_read_only=is_read_only,
             verifier=verifier,
+            always_confirm=always_confirm,
         )
         self._generation += 1
         logger.debug("Registered tool: %s", name)

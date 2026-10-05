@@ -103,6 +103,8 @@ registry.register(
 )
 ```
 
+For calls that must be confirmed even in `auto` mode, pass `always_confirm`: a function that receives the call's arguments (and the agent's `wiki`) and returns a short reason when confirmation is needed, or `None` otherwise.
+
 See [docs/GUIDE-008-PERMISSIONS.md](GUIDE-008-PERMISSIONS.md) for details on the permission system.
 
 ---

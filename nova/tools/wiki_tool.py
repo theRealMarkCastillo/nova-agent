@@ -117,6 +117,31 @@ WIKI_TOOL_SCHEMA = {
 }
 
 
+_CONTENT_EDITS = frozenset({"write", "append", "patch"})
+
+
+def _prompt_wide_change(args: dict[str, Any], wiki: Any = None, **kwargs: Any) -> str | None:
+    """Describe a change that would reach every future system prompt, if any.
+
+    Such notes persist across sessions, so an instruction the model was
+    tricked into saving there would steer every later conversation.
+    """
+    action = args.get("action")
+    title = str(args.get("title") or "").strip()
+    if action == "pin":
+        return "would put a note into every future system prompt"
+    if action == "replace":
+        return "edits notes across the vault, which can include always-injected notes"
+    if action == "rename":
+        new_title = str(args.get("new_title") or "").strip()
+        if wiki is not None and new_title and wiki.reaches_every_prompt(new_title):
+            return "would move a note into every future system prompt"
+        return None
+    if action in _CONTENT_EDITS and title and wiki is not None and wiki.reaches_every_prompt(title):
+        return "edits a note that appears in every future system prompt"
+    return None
+
+
 def _wiki_tool(args: dict[str, Any], **kwargs) -> str:
     wiki = kwargs.get("wiki")
     if wiki is None:
@@ -361,4 +386,5 @@ registry.register(
     schema=WIKI_TOOL_SCHEMA,
     handler=_wiki_tool,
     emoji="📓",
+    always_confirm=_prompt_wide_change,
 )

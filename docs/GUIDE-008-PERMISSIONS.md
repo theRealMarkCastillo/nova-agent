@@ -77,6 +77,10 @@ Every tool call is evaluated through these checks, in order:
 
 6. **Permission mode** — Final check based on `auto` vs `ask` mode
 
+## Always-Confirmed Changes
+
+A few changes persist into every future session, so they need confirmation in every mode, even for tools in `allowed_tools`. Currently these are wiki changes that put content into every system prompt (see [GUIDE-013](GUIDE-013-MEMORY_SYSTEM.md#the-core-convention)). Tools declare these with the `always_confirm` registration hook.
+
 ## Untrusted Content
 
 Output from `http_*`, `web_*`, and MCP tools comes from outside your control and
