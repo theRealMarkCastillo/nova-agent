@@ -497,7 +497,7 @@ def test_run_subagent_happy_path():
     mock_http_ctx.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
+        patch("nova.tools.delegate_tool.build_client", return_value=mock_http_ctx),
         patch("nova.agent.NovaAgent", return_value=mock_subagent) as mock_agent_class,
     ):
         result = _run_subagent(
@@ -528,7 +528,7 @@ def test_run_subagent_exception_returns_error_dict():
     mock_http_ctx.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
+        patch("nova.tools.delegate_tool.build_client", return_value=mock_http_ctx),
         patch("nova.agent.NovaAgent", side_effect=RuntimeError("connection refused")),
     ):
         result = _run_subagent(
@@ -565,7 +565,7 @@ def test_run_subagent_fork_mode_prefills_messages():
     mock_http_ctx.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
+        patch("nova.tools.delegate_tool.build_client", return_value=mock_http_ctx),
         patch("nova.agent.NovaAgent", return_value=mock_subagent),
     ):
         result = _run_subagent(
@@ -597,7 +597,7 @@ def test_run_subagent_isolated_mode_no_prefill():
     mock_http_ctx.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
+        patch("nova.tools.delegate_tool.build_client", return_value=mock_http_ctx),
         patch("nova.agent.NovaAgent", return_value=mock_subagent),
     ):
         result = _run_subagent(
@@ -628,7 +628,7 @@ def test_run_subagent_depth_incremented():
     mock_http_ctx.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
+        patch("nova.tools.delegate_tool.build_client", return_value=mock_http_ctx),
         patch("nova.agent.NovaAgent", return_value=mock_subagent),
     ):
         result = _run_subagent(
@@ -662,7 +662,7 @@ def test_run_subagent_custom_model_passed_to_config():
         return mock_subagent
 
     with (
-        patch("nova.tools.delegate_tool.OpenAI", return_value=mock_http_ctx),
+        patch("nova.tools.delegate_tool.build_client", return_value=mock_http_ctx),
         patch("nova.agent.NovaAgent", side_effect=capture_config),
     ):
         _run_subagent(

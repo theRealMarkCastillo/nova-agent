@@ -20,9 +20,8 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from threading import Event
 from typing import Any
 
-from openai import OpenAI
-
 from nova.config import set_model
+from nova.providers import build_client
 from nova.tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ DELEGATE_TASK_SCHEMA = {
         "Spawn a sub-agent to handle a specific task. "
         "Use for tasks that can be isolated, parallelized, or require focused execution. "
         "The sub-agent has access to all tools except delegate_task (if at depth limit). "
-        "Returns a JSON result with success status, output, and budget usage."
+        "Returns a JSON result with success status, output, and elapsed time."
     ),
     "parameters": {
         "type": "object",
@@ -114,20 +113,11 @@ def _build_subagent_config(
     return config
 
 
-def _extract_cost_data(subagent: Any | None) -> dict:
-    """Extract cost tracking data from sub-agent if available."""
-    if subagent is None:
-        return {}
-    cost_tracker = getattr(subagent, "cost_tracker", None)
-    if not cost_tracker:
-        return {}
-    total_usage = cost_tracker.total
-    return {
-        "input_tokens": total_usage.input_tokens,
-        "output_tokens": total_usage.output_tokens,
-        "input_cost": total_usage.input_cost,
-        "output_cost": total_usage.output_cost,
-    }
+def _merge_cost_into_parent(parent_agent: Any, subagent: Any | None) -> None:
+    parent_tracker = getattr(parent_agent, "cost_tracker", None)
+    child_tracker = getattr(subagent, "cost_tracker", None)
+    if parent_tracker and child_tracker:
+        parent_tracker.merge(child_tracker.total)
 
 
 def _run_subagent(
@@ -176,12 +166,7 @@ def _run_subagent(
 
     try:
         llm_cfg = subagent_config["llm"]
-        subagent_openai_client = OpenAI(
-            api_key=llm_cfg["api_key"],
-            base_url=llm_cfg["base_url"],
-            timeout=120.0,
-            max_retries=0,
-        )
+        subagent_openai_client = build_client(llm_cfg)
         with subagent_openai_client:
             subagent = NovaAgent(
                 config=subagent_config,
@@ -214,15 +199,12 @@ def _run_subagent(
             tool_msgs,
         )
 
-        usage_data = _extract_cost_data(subagent)
-
         return {
             "success": True,
             "result": result,
             "label": label,
             "depth": depth,
             "elapsed_seconds": round(elapsed, 1),
-            "usage": usage_data,
             "error": None,
             "timeout": False,
         }
@@ -231,19 +213,19 @@ def _run_subagent(
         elapsed = time.monotonic() - start_time
         logger.error("%s failed after %.1fs: %s", log_prefix, elapsed, e)
 
-        usage_data = _extract_cost_data(subagent)
-
         return {
             "success": False,
             "result": None,
             "label": label,
             "depth": depth,
             "elapsed_seconds": round(elapsed, 1),
-            "usage": usage_data,
             "error": str(e),
             "timeout": False,
         }
     finally:
+        # Runs even after the parent stopped waiting on a timeout, so the
+        # child's spend is never lost.
+        _merge_cost_into_parent(parent_agent, subagent)
         if subagent is not None:
             try:
                 subagent.close()
@@ -316,10 +298,6 @@ def _delegate_task(args: dict[str, Any], **kwargs) -> str:
         )
         try:
             result = future.result(timeout=timeout_seconds)
-            # Aggregate costs into parent agent
-            usage = result.pop("usage", {})
-            if usage and getattr(agent, "cost_tracker", None):
-                agent.cost_tracker.add_usage(**usage)
         except FuturesTimeoutError:
             cancel_event.set()
             logger.warning("Sub-agent '%s' timed out after %ds", label, timeout_seconds)

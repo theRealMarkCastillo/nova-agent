@@ -9,10 +9,12 @@ Tests the error scenarios:
 """
 
 import json
+import threading
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from unittest.mock import MagicMock, patch
 
-from nova.tools.delegate_tool import _delegate_task, _extract_cost_data
+from nova.cost_tracker import CostTracker
+from nova.tools.delegate_tool import _delegate_task
 
 
 def test_delegate_no_agent_context():
@@ -138,74 +140,79 @@ def test_delegate_timeout_seconds_clamped():
         assert parsed["success"] is True
 
 
-def test_delegate_cost_tracker_aggregation():
-    """Test that cost data from sub-agent is aggregated into parent."""
-    mock_agent = MagicMock()
-    mock_agent.depth = 0
-    mock_agent.config = {
-        "delegation": {"max_spawn_depth": 2},
-        "llm": {"model": "test", "base_url": "http://test", "api_key": "test"},
-    }
-    mock_agent.cost_tracker = MagicMock()
-
-    with patch("nova.tools.delegate_tool.ThreadPoolExecutor") as mock_executor_class:
-        mock_executor = MagicMock()
-        mock_executor_class.return_value.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor_class.return_value.__exit__ = MagicMock(return_value=None)
-
-        mock_future = MagicMock()
-        mock_future.result.return_value = {
-            "success": True,
-            "result": "OK",
-            "usage": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "input_cost": 0.001,
-                "output_cost": 0.0005,
-            },
-        }
-        mock_executor.submit.return_value = mock_future
-
-        _delegate_task({"task": "test task"}, agent=mock_agent)
-
-        # Verify cost_tracker.add_usage was called with the cost data
-        mock_agent.cost_tracker.add_usage.assert_called_once()
-        call_kwargs = mock_agent.cost_tracker.add_usage.call_args[1]
-        assert call_kwargs["input_tokens"] == 100
-        assert call_kwargs["output_tokens"] == 50
-
-
-def test_extract_cost_data_none_subagent():
-    """Test that _extract_cost_data handles None subagent gracefully."""
-    result = _extract_cost_data(None)
-    assert result == {}
-
-
-def test_extract_cost_data_no_cost_tracker():
-    """Test that _extract_cost_data handles missing cost_tracker."""
-    mock_agent = MagicMock()
-    delattr(mock_agent, "cost_tracker")
-    result = _extract_cost_data(mock_agent)
-    assert result == {}
-
-
-def test_extract_cost_data_valid_tracker():
-    """Test that _extract_cost_data extracts costs correctly."""
-    mock_agent = MagicMock()
-    mock_tracker = MagicMock()
-    mock_tracker.total = MagicMock(
-        input_tokens=500,
-        output_tokens=300,
-        input_cost=0.005,
-        output_cost=0.003,
+def _subagent_with_usage(input_tokens: int, cost: float) -> MagicMock:
+    child = MagicMock()
+    child.messages = []
+    child.cost_tracker = CostTracker(model="test")
+    child.cost_tracker.add_usage(
+        input_tokens=input_tokens, output_tokens=0, input_cost=cost, output_cost=0.0
     )
-    mock_agent.cost_tracker = mock_tracker
+    return child
 
-    result = _extract_cost_data(mock_agent)
-    assert result["input_tokens"] == 500
-    assert result["output_tokens"] == 300
-    assert result["input_cost"] == 0.005
-    assert result["output_cost"] == 0.003
+
+def _parent_with_tracker() -> MagicMock:
+    parent = MagicMock()
+    parent.depth = 0
+    parent.messages = []
+    parent.config = {
+        "delegation": {"max_spawn_depth": 2, "enabled": True},
+        "llm": {"model": "test", "base_url": "http://test", "api_key": "test"},
+        "agent": {"max_iterations": 5},
+        "budgets": {},
+    }
+    parent.cost_tracker = CostTracker(model="test")
+    return parent
+
+
+def test_subagent_cost_merged_into_parent():
+    parent = _parent_with_tracker()
+    child = _subagent_with_usage(100, 0.001)
+    child.run.return_value = "OK"
+
+    with (
+        patch("nova.tools.delegate_tool.build_client"),
+        patch("nova.agent.NovaAgent", return_value=child),
+    ):
+        result = _delegate_task({"task": "test task"}, agent=parent)
+
+    assert json.loads(result)["success"] is True
+    assert parent.cost_tracker.total.input_tokens == 100
+    assert parent.cost_tracker.total.input_cost == 0.001
+
+
+def test_failed_subagent_cost_merged_into_parent():
+    parent = _parent_with_tracker()
+    child = _subagent_with_usage(40, 0.0004)
+    child.run.side_effect = RuntimeError("boom")
+
+    with (
+        patch("nova.tools.delegate_tool.build_client"),
+        patch("nova.agent.NovaAgent", return_value=child),
+    ):
+        _delegate_task({"task": "test task"}, agent=parent)
+
+    assert parent.cost_tracker.total.input_tokens == 40
+
+
+def test_timed_out_subagent_cost_merged_when_it_finishes():
+    parent = _parent_with_tracker()
+    child = _subagent_with_usage(70, 0.0007)
+    release = threading.Event()
+    closed = threading.Event()
+    child.run.side_effect = lambda *args, **kwargs: release.wait(5) and "late"
+    child.close.side_effect = closed.set
+
+    with (
+        patch("nova.tools.delegate_tool.build_client"),
+        patch("nova.agent.NovaAgent", return_value=child),
+    ):
+        result = json.loads(_delegate_task({"task": "slow", "timeout_seconds": 1}, agent=parent))
+        assert result["timeout"] is True
+        assert parent.cost_tracker.total.input_tokens == 0
+        release.set()
+        assert closed.wait(5)
+
+    assert parent.cost_tracker.total.input_tokens == 70
 
 
 def test_delegate_config_deep_copy():

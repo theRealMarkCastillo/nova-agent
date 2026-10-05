@@ -51,6 +51,13 @@ Costs are estimated using per-model pricing tables. When OpenRouter returns actu
 
 Unknown models use a default rate of $0.10/1M input tokens and $0.30/1M output tokens.
 
+### Sub-agent Costs
+
+Each `delegate_task` sub-agent tracks its own usage and merges it, including
+cache tokens and provider-reported totals, into the parent's tracker when it
+finishes. This also happens when the parent stopped waiting because of a
+timeout: the merge runs once the sub-agent exits, so its spend is never dropped.
+
 ## Programmatic API
 
 ```python

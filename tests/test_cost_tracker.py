@@ -1,5 +1,6 @@
 """Tests for the cost tracker."""
 
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -270,3 +271,55 @@ def test_nested_cache_usage_cost_accounting(reported_cost):
     assert tracker.total.total_tokens == 105
     expected = reported_cost if reported_cost is not None else 0.000058
     assert tracker.total.total_cost == pytest.approx(expected)
+
+
+def test_merge_adds_priced_usage_including_cache():
+    parent = CostTracker(model="test")
+    parent.add_usage(input_tokens=10, output_tokens=5, input_cost=0.01, output_cost=0.02)
+    child = CostTracker(model="test")
+    child.add_usage(
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=80,
+        input_cost=0.1,
+        output_cost=0.2,
+    )
+
+    parent.merge(child.total)
+
+    total = parent.total
+    assert (total.input_tokens, total.output_tokens, total.cache_read_tokens) == (110, 55, 80)
+    assert total.input_cost == pytest.approx(0.11)
+    assert total.output_cost == pytest.approx(0.22)
+    assert total.reported_total_cost is None
+
+
+def test_merge_accumulates_reported_total_cost():
+    parent = CostTracker(model="test")
+    parent.add_usage(input_tokens=1, total_cost=0.5)
+    child = CostTracker(model="test")
+    child.add_usage(input_tokens=2, total_cost=0.25)
+
+    parent.merge(child.total)
+
+    assert parent.total.total_cost == pytest.approx(0.75)
+    assert parent.total.input_tokens == 3
+
+
+def test_concurrent_merges_are_not_lost():
+    parent = CostTracker(model="test")
+    child = CostTracker(model="test")
+    child.add_usage(input_tokens=1, output_tokens=0, input_cost=0.0, output_cost=0.0)
+    snapshot = child.total
+
+    def merge_many() -> None:
+        for _ in range(500):
+            parent.merge(snapshot)
+
+    threads = [threading.Thread(target=merge_many) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert parent.total.input_tokens == 4000

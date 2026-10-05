@@ -4,6 +4,7 @@ Tracks cumulative input/output tokens and estimated dollar costs using
 provider model metadata and reported response usage when available.
 """
 
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TypedDict
@@ -72,6 +73,8 @@ class CostTracker:
     model: str = ""
     _usage: UsageSnapshot = field(default_factory=UsageSnapshot)
     _reported_total_cost: float | None = None
+    # Sub-agents merge into their parent's tracker from worker threads.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def add_usage(
         self,
@@ -95,6 +98,27 @@ class CostTracker:
             if cost is not None and cost < 0:
                 raise ValueError("costs cannot be negative")
 
+        with self._lock:
+            self._add_usage_locked(
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                input_cost,
+                output_cost,
+                total_cost,
+            )
+
+    def _add_usage_locked(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        input_cost: float | None,
+        output_cost: float | None,
+        total_cost: float | None,
+    ) -> None:
         estimated: dict[str, float] = {}
         if total_cost is not None:
             self._reported_total_cost = (self._reported_total_cost or 0.0) + total_cost
@@ -124,6 +148,26 @@ class CostTracker:
             else self._usage.cache_write_cost,
             reported_total_cost=self._reported_total_cost,
         )
+
+    def merge(self, other: UsageSnapshot) -> None:
+        """Add another tracker's accumulated usage, keeping its priced costs."""
+        with self._lock:
+            if other.reported_total_cost is not None:
+                self._reported_total_cost = (
+                    self._reported_total_cost or 0.0
+                ) + other.reported_total_cost
+            u = self._usage
+            self._usage = UsageSnapshot(
+                input_tokens=u.input_tokens + other.input_tokens,
+                output_tokens=u.output_tokens + other.output_tokens,
+                input_cost=u.input_cost + other.input_cost,
+                output_cost=u.output_cost + other.output_cost,
+                cache_read_tokens=u.cache_read_tokens + other.cache_read_tokens,
+                cache_write_tokens=u.cache_write_tokens + other.cache_write_tokens,
+                cache_read_cost=u.cache_read_cost + other.cache_read_cost,
+                cache_write_cost=u.cache_write_cost + other.cache_write_cost,
+                reported_total_cost=self._reported_total_cost,
+            )
 
     def _estimate_cost(
         self, input_tokens: int, output_tokens: int, cache_read_tokens: int, cache_write_tokens: int
@@ -155,8 +199,9 @@ class CostTracker:
 
     def reset(self) -> None:
         """Reset the tracker to zero."""
-        self._usage = UsageSnapshot()
-        self._reported_total_cost = None
+        with self._lock:
+            self._usage = UsageSnapshot()
+            self._reported_total_cost = None
 
     def format_summary(self) -> str:
         """Return a human-readable usage summary."""
