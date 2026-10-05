@@ -27,8 +27,8 @@ without re-running the review.
 
 | Phase | Theme | Items | Status |
 |-------|-------|-------|--------|
-| 0 | High-value bug fixes | H2, H3, M1 | ✅ Fixed in working tree (uncommitted) |
-| 1 | Correctness quick wins | M2, M3a, M7a, L1–L8 | 📋 Planned |
+| 0 | High-value bug fixes | H2, H3, M1 | ✅ Done (`b0ae781`, `455ffce`, `62f273c`) |
+| 1 | Correctness quick wins | M2, M3a, M7a, L1–L8 | ✅ Done (`47ee7eb`…`3894d5b`) |
 | 2 | Safety model | H1, M8, S1–S3 | 📋 Planned |
 | 3 | Architecture | M5, M7, M3b | 📋 Planned |
 | 4 | Performance | M6, M4 | 📋 Planned |
@@ -47,7 +47,14 @@ frozen, because it changes how tools are scoped per agent.
 
 ## Phase 1: Correctness Quick Wins
 
-Small, local changes; each is one commit with a regression test.
+✅ Done. Each item landed with regression tests. Notes on how they were resolved:
+
+- M2 decodes HTML entities and `\uXXXX` escapes before matching, rather than dropping detection, and ignores a leading byte order mark.
+- M3a adds a lock-protected `CostTracker.merge`, called from the sub-agent's own `finally`.
+- M7a passes the pipeline's single policy decision to the trace, so permissions are evaluated once and MCP tools are traced too.
+- L5 also unwraps IPv4-mapped IPv6 addresses.
+- L6 classifies tool errors with `classify_error`. Matching is still text-based until M7 introduces typed results.
+
 
 | ID | Problem | Change | Acceptance |
 |----|---------|--------|------------|
