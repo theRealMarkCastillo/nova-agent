@@ -8,6 +8,7 @@ import pytest
 from openai import OpenAI
 
 from nova.agent import NovaAgent
+from nova.harness import HarnessTrace, ToolTrace
 from nova.session import SessionStore
 from nova.tools.registry import discover_builtin_tools
 
@@ -314,3 +315,79 @@ def test_execute_tool_calls_parallel_callback_invoked(minimal_config, mock_sessi
 
     # Callback may or may not be invoked depending on implementation
     assert len(results) > 0
+
+
+def _traced_call(agent: NovaAgent, call: dict) -> ToolTrace:
+    agent._active_trace = HarnessTrace("run", "goal")
+    try:
+        agent._execute_tool_call(call)
+        return agent._active_trace.run.tool_traces[0]
+    finally:
+        agent._active_trace = None
+
+
+def test_trace_outcome_ignores_confirmation_text_in_result(
+    minimal_config, mock_session_store, tmp_path
+):
+    (tmp_path / "notes.txt").write_text("This step requires confirmation from ops.\n")
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+    )
+
+    trace = _traced_call(
+        agent,
+        {"id": "r", "function": {"name": "read_file", "arguments": '{"path":"notes.txt"}'}},
+    )
+
+    assert trace.outcome == "completed"
+    assert trace.policy_allowed is True
+
+
+def test_trace_outcome_denied_when_confirmation_refused(
+    minimal_config, mock_session_store, tmp_path
+):
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+        confirmation_callback=lambda name, args: False,
+    )
+
+    trace = _traced_call(
+        agent,
+        {
+            "id": "w",
+            "function": {
+                "name": "write_file",
+                "arguments": '{"path":"out.txt","content":"x"}',
+            },
+        },
+    )
+
+    assert trace.outcome == "denied"
+    assert trace.policy_confirmation_required is True
+    assert not (tmp_path / "out.txt").exists()
+
+
+def test_trace_evaluates_policy_once(minimal_config, mock_session_store, tmp_path):
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+    )
+    (tmp_path / "a.txt").write_text("a")
+
+    with patch.object(
+        agent.permission_checker, "evaluate", wraps=agent.permission_checker.evaluate
+    ) as evaluate:
+        _traced_call(
+            agent,
+            {"id": "r", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+        )
+
+    assert evaluate.call_count == 1

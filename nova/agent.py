@@ -35,7 +35,7 @@ from nova.mcp_client import McpToolInfo, build_mcp_client
 from nova.microcompact import compact_to_token_budget
 from nova.model_metadata import get_model_context_window, load_provider_metadata
 from nova.observability import create_observability, redact
-from nova.permissions import PermissionChecker, build_permission_checker
+from nova.permissions import PermissionChecker, PermissionResult, build_permission_checker
 from nova.prompt import build_system_prompt
 from nova.providers import (
     build_client,
@@ -479,26 +479,22 @@ class NovaAgent:
         except (TypeError, json.JSONDecodeError):
             args = {}
         collector = self._active_trace
-        trace = None
-        permission = None
-        if collector is not None:
-            trace = collector.start_tool(call_id, name, redact(args))
-            entry = registry.get_tool(name)
-            if entry is not None:
-                permission = self.permission_checker.evaluate(
-                    name,
-                    is_read_only=entry.is_read_only,
-                    file_path=self._permission_path(args),
-                    command=args.get("command"),
-                )
+        trace = collector.start_tool(call_id, name, redact(args)) if collector else None
+        denied = False
+
+        def record_policy(permission: PermissionResult, approved: bool) -> None:
+            nonlocal denied
+            denied = not permission.allowed or not approved
+            if trace is not None and collector is not None:
                 collector.policy(
                     trace,
                     allowed=permission.allowed,
                     confirmation_required=permission.requires_confirmation,
                     reason=permission.reason,
                 )
+
         try:
-            result = self._execute_tool_call_impl(tool_call)
+            result = self._execute_tool_call_impl(tool_call, on_policy=record_policy)
             verification = None
             entry = registry.get_tool(name)
             if entry is not None and entry.verifier is not None and isinstance(args, dict):
@@ -509,11 +505,7 @@ class NovaAgent:
             if verification is None and isinstance(result, str) and result.startswith("Error:"):
                 verification = VerificationResult("failed", reason="tool returned an error")
             outcome: Literal["completed", "failed", "denied"] = (
-                "denied"
-                if permission is not None
-                and not permission.allowed
-                or (isinstance(result, str) and "requires confirmation" in result)
-                else ("failed" if result.startswith("Error:") else "completed")
+                "denied" if denied else ("failed" if result.startswith("Error:") else "completed")
             )
             if trace is not None and collector is not None:
                 collector.finish_tool(
@@ -532,7 +524,11 @@ class NovaAgent:
                 collector.finish_tool(trace, outcome="failed", result=type(exc).__name__)
             raise
 
-    def _execute_tool_call_impl(self, tool_call: dict) -> str:
+    def _execute_tool_call_impl(
+        self,
+        tool_call: dict,
+        on_policy: Callable[[PermissionResult, bool], None] | None = None,
+    ) -> str:
         """Execute a single tool call and return the result.
 
         Automatically retries transient errors (timeout, network) but not permanent ones.
@@ -576,20 +572,21 @@ class NovaAgent:
         self.observability.policy(name, allowed=perm_result.allowed, reason=perm_result.reason)
 
         if not perm_result.allowed:
+            if on_policy is not None:
+                on_policy(perm_result, False)
             logger.warning("Tool call denied: %s — %s", name, perm_result.reason)
             self.observability.tool(name, input_data=arguments, output_data="denied")
             return f"Error: {perm_result.reason}"
 
-        if perm_result.requires_confirmation:
-            approved = bool(
-                self._confirmation_callback and self._confirmation_callback(name, arguments)
-            )
-            if not approved:
-                logger.info("Tool '%s' denied because confirmation was not granted", name)
-                self.observability.tool(
-                    name, input_data=arguments, output_data="confirmation_denied"
-                )
-                return f"Error: Tool '{name}' requires confirmation"
+        approved = not perm_result.requires_confirmation or bool(
+            self._confirmation_callback and self._confirmation_callback(name, arguments)
+        )
+        if on_policy is not None:
+            on_policy(perm_result, approved)
+        if not approved:
+            logger.info("Tool '%s' denied because confirmation was not granted", name)
+            self.observability.tool(name, input_data=arguments, output_data="confirmation_denied")
+            return f"Error: Tool '{name}' requires confirmation"
 
         if self._interrupt_check is not None and self._interrupt_check():
             return "[Interrupted by user before tool execution]"
