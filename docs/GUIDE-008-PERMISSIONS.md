@@ -1,7 +1,7 @@
 # Permission System
 
 **Status:** ✅ Active  
-**Last Updated:** August 2026  
+**Last Updated:** October 2026  
 **Type:** GUIDE (Feature Reference)
 
 > Nova Agent includes a configurable permission system that controls tool execution through a defense-in-depth cascade. This prevents accidental or malicious actions while maintaining flexibility.
@@ -55,6 +55,10 @@ Every tool call is evaluated through these checks, in order:
        - pattern: "/tmp/*"
          allow: true
    ```
+   A matching `allow: false` rule denies the call. A matching `allow: true` rule
+   skips confirmation for file tools, but not for shell commands: for `terminal`
+   the path is only the working directory, so command deny patterns and the
+   permission mode still apply.
 
 5. **Command deny patterns** — Shell commands that are always blocked:
    ```yaml

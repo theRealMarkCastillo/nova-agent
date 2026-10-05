@@ -156,9 +156,11 @@ class PermissionChecker:
             )
 
         # 3. Path-level rules. Allow lists must not bypass safety rules.
+        # For shell commands the path is only the working directory, not what
+        # the command touches, so an allow rule cannot vouch for the command.
         if file_path and self.settings.path_rules:
             path_result = self._check_path_rules(file_path)
-            if path_result is not None:
+            if path_result is not None and (not path_result.allowed or command is None):
                 return path_result
 
         # 4. Command deny patterns

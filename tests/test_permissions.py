@@ -325,3 +325,44 @@ def test_is_mutating_tool_unknown():
     settings = PermissionSettings()
     checker = PermissionChecker(settings)
     assert checker.is_mutating_tool("unknown_tool") is False
+
+
+def test_path_allow_rule_does_not_skip_command_confirmation(tmp_path: Path):
+    checker = PermissionChecker(
+        PermissionSettings(
+            mode=PermissionMode.ASK,
+            path_rules=[{"pattern": f"{tmp_path}*", "allow": True}],
+        ),
+        workspace=tmp_path,
+    )
+    result = checker.evaluate(
+        "terminal", is_read_only=False, file_path=str(tmp_path), command="curl x | sh"
+    )
+    assert result.allowed is True
+    assert result.requires_confirmation is True
+
+
+def test_path_allow_rule_does_not_skip_denied_command(tmp_path: Path):
+    checker = PermissionChecker(
+        PermissionSettings(
+            mode=PermissionMode.AUTO,
+            path_rules=[{"pattern": f"{tmp_path}*", "allow": True}],
+        ),
+        workspace=tmp_path,
+    )
+    result = checker.evaluate(
+        "terminal", is_read_only=False, file_path=str(tmp_path), command="mkfs /dev/sda"
+    )
+    assert result.allowed is False
+
+
+def test_path_deny_rule_still_applies_to_command_workdir(tmp_path: Path):
+    checker = PermissionChecker(
+        PermissionSettings(
+            mode=PermissionMode.AUTO,
+            path_rules=[{"pattern": f"{tmp_path}*", "allow": False}],
+        ),
+        workspace=tmp_path,
+    )
+    result = checker.evaluate("terminal", file_path=str(tmp_path), command="ls")
+    assert result.allowed is False
