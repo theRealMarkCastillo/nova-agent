@@ -704,15 +704,16 @@ def test_tool_is_registered(name):
 
 
 def test_read_only_web_tools_are_parallel_eligible():
-    from nova.tools.registry import _READ_ONLY_TOOLS
+    from nova.tools.web import _TOOLS
 
+    read_only = {name: flag for name, _schema, _handler, _emoji, flag in _TOOLS}
     for name in ("web_search", "web_scrape", "web_map"):
-        assert name in _READ_ONLY_TOOLS, f"{name} missing from parallel dispatch set"
+        assert read_only[name] is True, f"{name} missing from parallel dispatch set"
     # Credit-spending, job-mutating tools must not be treated as read-only:
     # they require confirmation in ask-mode and are excluded from parallel fan-out.
-    assert "web_crawl" not in _READ_ONLY_TOOLS
-    assert "web_extract" not in _READ_ONLY_TOOLS
-    assert "web_parse" not in _READ_ONLY_TOOLS
+    assert read_only["web_crawl"] is False
+    assert read_only["web_extract"] is False
+    assert read_only.get("web_parse", False) is False
 
 
 def test_credit_spending_web_tools_are_not_read_only():

@@ -1,7 +1,7 @@
 # Creating Custom Tools
 
 **Status:** ✅ Active  
-**Last Updated:** May 2026  
+**Last Updated:** October 2026  
 **Type:** GUIDE (Developer Reference)
 
 > Tools are the primary way Nova takes action in the world — running commands, reading files, calling APIs, and more. This guide walks you through building your own tools from scratch.
@@ -80,7 +80,7 @@ That's it. Restart `nova chat` and the agent can call `hello(name="Nova")`.
 
 ## Read-Only vs Mutating Tools
 
-Tools are automatically classified as **read-only** or **mutating** for the permission system:
+Each tool declares whether it is **read-only** with `is_read_only` at registration. Tools that omit it are **mutating**. The flag is the only source of this classification for the permission system and parallel dispatch:
 
 **Read-only tools** (never need confirmation):
 - `read_file`, `search_files`, `web_search`
@@ -91,7 +91,7 @@ Tools are automatically classified as **read-only** or **mutating** for the perm
 - `skill_manage`, `wiki`, `delegate_task`
 - `web_crawl`, `web_extract` (they look read-only but cost credits per page), `web_parse` (uploads local file bytes)
 
-To mark your custom tool as read-only:
+Read-only tools are approved without confirmation and may run in parallel, so only set the flag on tools that change nothing (local or remote). To mark your custom tool as read-only:
 
 ```python
 registry.register(

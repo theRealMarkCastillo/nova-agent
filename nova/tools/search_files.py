@@ -200,4 +200,5 @@ registry.register(
     schema=SEARCH_FILES_SCHEMA,
     handler=_search_files,
     emoji="🔎",
+    is_read_only=True,
 )

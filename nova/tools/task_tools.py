@@ -233,6 +233,7 @@ registry.register(
     schema=TASK_STATUS_SCHEMA,
     handler=_task_status,
     emoji="📊",
+    is_read_only=True,
 )
 
 registry.register(
@@ -241,6 +242,7 @@ registry.register(
     schema=TASK_OUTPUT_SCHEMA,
     handler=_task_output,
     emoji="📄",
+    is_read_only=True,
 )
 
 registry.register(
@@ -257,4 +259,5 @@ registry.register(
     schema=TASK_LIST_SCHEMA,
     handler=_task_list,
     emoji="📋",
+    is_read_only=True,
 )

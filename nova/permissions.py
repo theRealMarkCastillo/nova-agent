@@ -16,7 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from nova.tools.registry import _READ_ONLY_TOOLS
+from nova.tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class PermissionChecker:
 
         Args:
             tool_name: Name of the tool being called.
-            is_read_only: Whether the tool is read-only. If None, inferred from tool name.
+            is_read_only: Whether the tool is read-only. If None, taken from its registration.
             file_path: File path argument (for path rule matching).
             command: Command string (for command deny matching).
 
@@ -159,9 +159,11 @@ class PermissionChecker:
         explicitly_allowed = tool_name in self.settings.allowed_tools
 
         # 6. Permission mode
-        read_only = is_read_only if is_read_only is not None else tool_name in _READ_ONLY_TOOLS
+        if is_read_only is None:
+            entry = registry.get_tool(tool_name)
+            is_read_only = entry is not None and entry.is_read_only
 
-        if read_only:
+        if is_read_only:
             return PermissionResult(allowed=True)
 
         if self.settings.mode == PermissionMode.AUTO or explicitly_allowed:

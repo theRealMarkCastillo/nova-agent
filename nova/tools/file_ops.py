@@ -318,6 +318,7 @@ registry.register(
     schema=READ_FILE_SCHEMA,
     handler=_read_file,
     emoji="📖",
+    is_read_only=True,
 )
 
 registry.register(

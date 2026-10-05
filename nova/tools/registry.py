@@ -14,35 +14,6 @@ from nova.observability import redact
 logger = logging.getLogger(__name__)
 
 
-# Tools that are inherently read-only (never mutate state).
-# These are eligible for parallel dispatch — multiple read-only tool calls
-# in the same LLM response run concurrently.
-# delegate_task is intentionally NOT here: it spawns sub-agents with shared
-# state (wiki, session store) and is not safe to fan out in parallel.
-# web_crawl/web_extract are also excluded: they start credit-spending,
-# job-mutating operations, so they must require confirmation in ask-mode and
-# must not be fanned out as "read-only" parallel calls.
-_READ_ONLY_TOOLS: frozenset[str] = frozenset(
-    {
-        "read_file",
-        "list_files",
-        "search_files",
-        "search_sessions",
-        "web_search",
-        "web_scrape",
-        "web_map",
-        "web_dev_search",
-        "web_usage",
-        "http_get",
-        "skills_list",
-        "skill_view",
-        "skill_export",
-        "task_status",
-        "task_list",
-        "task_output",
-    }
-)
-
 # Display ordering and labels for the grouped tool summary in the system prompt.
 _TOOLSET_ORDER: tuple[str, ...] = (
     "file",
@@ -134,9 +105,6 @@ class ToolRegistry:
             if existing.handler is not handler or existing.schema != schema:
                 logger.error("Tool name collision for '%s'; keeping the first registration", name)
             return
-        # Auto-detect read-only status if not explicitly set
-        if not is_read_only:
-            is_read_only = name in _READ_ONLY_TOOLS
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,

@@ -262,6 +262,7 @@ registry.register(
     schema=SKILL_EXPORT_SCHEMA,
     handler=_skill_export,
     emoji="📤",
+    is_read_only=True,
 )
 
 registry.register(
@@ -270,6 +271,7 @@ registry.register(
     schema=SKILLS_LIST_SCHEMA,
     handler=_skills_list,
     emoji="📚",
+    is_read_only=True,
 )
 
 registry.register(
@@ -278,6 +280,7 @@ registry.register(
     schema=SKILL_VIEW_SCHEMA,
     handler=_skill_view,
     emoji="📖",
+    is_read_only=True,
 )
 
 registry.register(

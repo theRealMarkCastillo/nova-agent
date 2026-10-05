@@ -458,6 +458,7 @@ registry.register(
     schema=HTTP_GET_SCHEMA,
     handler=_http_get,
     emoji="📡",
+    is_read_only=True,
 )
 
 registry.register(

@@ -45,3 +45,33 @@ def test_dispatch_unknown_tool():
     result = registry.dispatch("nonexistent_tool", {})
     assert "Error" in result
     assert "nonexistent_tool" in result
+
+
+def test_builtin_read_only_tools_are_declared_at_registration():
+    discover_builtin_tools({"delegation": {"enabled": True}})
+    builtin = {
+        name for name in registry.all_tool_names if not name.startswith(("web_", "mcp__", "test_"))
+    }
+    read_only = {name for name in builtin if registry.get_tool(name).is_read_only}
+
+    assert read_only == {
+        "read_file",
+        "list_files",
+        "search_files",
+        "search_sessions",
+        "search_messages",
+        "read_session",
+        "http_get",
+        "skills_list",
+        "skill_view",
+        "skill_export",
+        "task_status",
+        "task_list",
+        "task_output",
+        "git_status",
+        "git_log",
+        "git_diff",
+        "git_blame",
+        "git_show",
+    }
+    assert {"terminal", "write_file", "patch_file", "wiki", "delegate_task"} <= builtin - read_only
