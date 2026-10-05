@@ -60,6 +60,7 @@
 | [SPEC-002-ACP_INTEGRATION](SPEC-002-ACP_INTEGRATION.md) | 📋 Planned | ACP editor parity: client MCP servers, session management, UX features, remote transports |
 | [SPEC-003-NOVA_SDK_PUBLIC_API](SPEC-003-NOVA_SDK_PUBLIC_API.md) | 📋 Planned | Public API surface: NovaAgent, typed options/events, harness traces, stores, PyPI |
 | [SPEC-004-STASH_RECOVERY_PLAN](SPEC-004-STASH_RECOVERY_PLAN.md) | ✅ Implemented | Integrated updater and nested cache-usage fixes and verification evidence |
+| [SPEC-005-REVIEW_IMPROVEMENT_PLAN](SPEC-005-REVIEW_IMPROVEMENT_PLAN.md) | 🟡 In Progress | October 2026 code/design review: fixed retry, path-rule, and file-mode bugs; phased plan for safety, architecture, and performance |
 
 ---
 

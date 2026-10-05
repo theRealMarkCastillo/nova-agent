@@ -1,55 +1,49 @@
 # ACTIVE WORKSTREAM HANDOFF
 
-**Status:** ✅ Integrated into main
+**Status:** 🟡 In Progress
 **Last Updated:** October 2026
 **Type:** REPORT (Session Handoff)
 
-- **Workstream:** Recover external virtualenv updates and nested cache accounting
-- **Active Branch:** `main`
-- **Current Status:** COMPLETE
+- **Workstream:** Code/design review fixes and improvement plan ([SPEC-005](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md))
+- **Active Branch:** `main` (changes are uncommitted in the working tree, per user request to fix directly on this branch)
+- **Current Status:** IN_PROGRESS
 
 ## 1. Ground Truth & State
 
-Implemented the two relevant fixes identified in [SPEC-004](docs/SPEC-004-STASH_RECOVERY_PLAN.md), preserving the prior planning documents. Reviewed the final changes with no remaining findings. The user subsequently authorized merge and push. Fast-forwarded `main` to include `dc5b715` and `b8bfa25`; both saved stashes remain intact. Remote `main` was refreshed and confirmed to be an ancestor before integration.
+A code and design review of `main` at `863bc26` produced the findings recorded in SPEC-005. The user asked for the high-value bugs to be fixed directly on this branch and for an improvement plan. Phase 0 is implemented and verified. Nothing has been committed or pushed.
 
 Exact files touched:
-- `nova/cli.py`: use the running virtualenv interpreter, preserving its symlink path, then fall back to repository `.venv` / `venv`; show the selected interpreter.
-- `nova/cost_tracker.py`: read nested cache-token counts when top-level fields provide none, ignore malformed nested details, preserve prompt totals and authoritative provider costs.
-- `tests/test_cli.py`: offline updater regressions for environment selection, symlink preservation, missing interpreters, and installation failures.
-- `tests/test_cost_tracker.py`: nested fields, precedence, malformed details, discounted estimates, and reported costs.
-- `tests/test_providers.py`: streaming and non-streaming SDK usage extraction.
-- `docs/GUIDE-009-USING_NOVA.md`, `docs/GUIDE-005-COST_TRACKING.md`: user-facing behavior.
-- `docs/SPEC-004-STASH_RECOVERY_PLAN.md`, `docs/DOCUMENTATION_INDEX.md`: plan, evidence, and implementation status.
-- `HANDOFF.md`: current delivery and verification state.
+- `nova/retry.py`: new `classify_exception` classifies OpenAI SDK, httpx, and builtin transport errors by type before message patterns (H2). `retry_with_backoff` uses it.
+- `nova/permissions.py`: a matching `allow: true` path rule no longer short-circuits when a command is present, so `terminal` keeps command-deny and confirmation checks (H3).
+- `nova/tools/file_ops.py`: shared `_atomic_write` preserves existing file mode, writes through symlinks, and applies the import-time umask to new files (M1).
+- `tests/test_retry.py`, `tests/test_permissions.py`, `tests/test_file_ops.py`: 12 regression tests; 11 failed before the fixes (`APITimeoutError` already matched its message text).
+- `docs/GUIDE-008-PERMISSIONS.md`, `docs/GUIDE-014-RETRY_AND_ERROR_HANDLING.md`: user-facing behavior.
+- `docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md` (new), `docs/DOCUMENTATION_INDEX.md`: plan and index.
+- `HANDOFF.md`: this file.
 
 Validation:
-- Baseline focused suite: 77 passed.
-- New regressions reproduced 10 failures before implementation.
-- Final focused suite: 105 passed.
 - `.venv/bin/ruff check .`: passed.
-- `.venv/bin/ruff format --check .`: 85 files already formatted.
+- `.venv/bin/ruff format --check .`: passed.
 - `.venv/bin/mypy nova/`: passed, 43 source files.
-- `.venv/bin/pytest -q`: 1302 passed, 84.68% coverage.
-- `git diff --check`: passed.
-- Git updates and pip installation were mocked; no actual updater or paid provider calls were run.
+- `.venv/bin/pytest -q`: 1314 passed, 84.77% coverage.
+- `git diff --check`: flags only the existing two-space Markdown line breaks on re-dated metadata lines.
 
-Retained history:
-- `533f21d` (`stash@{0}`): updater experiment, selectively recovered.
-- `023ec2d` (`stash@{1}`): mixed provider experiment; recovered only nested cache accounting. Native Anthropic/protocol changes remain obsolete; request options and endpoint-cache redesign remain deferred.
-- Previous context-window integration is in `main` at `022dd86`, verified pushed. Local cleanup handoff commit `dd64c24` is also in this branch's ancestry.
-- The removed historical Claude worktree remains recoverable from `.git/cleanup-archives/agent-aa60b7eef7d22d10b/history.bundle`; its local settings are archived beside it.
+Retained history from the previous workstream (still applies): stashes `stash@{0}` (`533f21d`) and `stash@{1}` (`023ec2d`) remain intact pending authorized cleanup; the archived worktree bundle remains under `.git/cleanup-archives/`.
 
 ## 2. Active Hypothesis & Blockers
 
-None. This delivery changes only documentation beyond the tested implementation; lint and diff checks pass. Stash retirement remains a separate cleanup action; retain the mixed stash until authorized cleanup preserves its deferred content.
+No blockers. Phase 0 changes await the user's review and a decision on committing (suggested: three commits, `fix: retry SDK transport errors by exception type`, `fix: keep confirmation for commands under path allow rules`, `fix: preserve file mode and symlinks on atomic writes`, plus `docs: add SPEC-005 review improvement plan`).
 
 ## 3. Immediate Next Action (Start Here)
+
+1. Run `.venv/bin/pytest -q` to confirm 1314 passing.
+2. After the user approves commits, start SPEC-005 Phase 1 with M2 (`nova/context.py` `_CONTEXT_THREAT_PATTERNS`), adding a regression test that a context file containing `"é"` and `&#x26;` loads unmodified.
 
 ## Related Documentation
 
 | Document | Purpose |
 |----------|---------|
-| [Recovery Plan](docs/SPEC-004-STASH_RECOVERY_PLAN.md) | Scope, evidence, and acceptance criteria |
-| [Cost Tracking](docs/GUIDE-005-COST_TRACKING.md) | Cache-token accounting behavior |
-| [Using Nova](docs/GUIDE-009-USING_NOVA.md) | Updater behavior |
+| [SPEC-005 Review Improvement Plan](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md) | Findings, phases, and acceptance checks |
+| [GUIDE-008 Permissions](docs/GUIDE-008-PERMISSIONS.md) | Path-rule semantics |
+| [GUIDE-014 Retry and Error Handling](docs/GUIDE-014-RETRY_AND_ERROR_HANDLING.md) | Exception classification |
 | [Contribution Guide](CONTRIBUTING.md) | Development and validation workflow |
