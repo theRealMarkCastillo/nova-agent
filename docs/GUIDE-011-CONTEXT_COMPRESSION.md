@@ -1,7 +1,7 @@
 # GUIDE-011: Context Compaction and Historical Retrieval
 
 **Status:** ✅ Active  
-**Last Updated:** August 2026
+**Last Updated:** October 2026
 **Type:** GUIDE (Developer & User Reference)
 
 Nova keeps the active request within the model context window using deterministic compaction. It does not call an LLM to summarize conversation history. Raw session messages remain in SQLite and can be retrieved on demand with full-text search.
@@ -19,6 +19,10 @@ To recover older context, ask Nova to search its session history. Nova can use `
 ## Active Context
 
 Before each model request Nova estimates tokens for the system prompt, conversation, and tool definitions. It reserves space for the model response and a safety margin.
+
+### Estimate calibration
+
+Estimates use the `cl100k_base` tokenizer, which can differ from the model's own tokenizer by tens of percent (for example on Claude or Gemini models). After each response that reports `prompt_tokens`, Nova compares that count with its estimate of the same request. It then scales the budget by the ratio, bounded to between 0.8× and 2×. The first request of a session uses the raw estimate. Estimates include tool schemas and any `reasoning_content` sent back to the model. Repeated text is counted once and cached, so re-estimating a long session on each loop iteration stays cheap.
 
 When the active budget is exceeded, Nova:
 

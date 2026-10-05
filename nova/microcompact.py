@@ -15,6 +15,8 @@ import copy
 import logging
 from typing import Any
 
+from nova.tokens import estimate_message_tokens
+
 logger = logging.getLogger(__name__)
 
 # How many recent messages to preserve fully (default: last 6 messages)
@@ -128,14 +130,17 @@ def compact_to_token_budget(
     strip_tool_results: bool = True,
 ) -> list[dict[str, Any]]:
     """Compact tool output and remove oldest complete turns to fit a budget."""
-    from nova.tokens import estimate_messages_tokens
-
     result = (
         microcompact_messages(messages, keep_recent=keep_recent)
         if strip_tool_results
         else copy.deepcopy(messages)
     )
-    while estimate_messages_tokens(result) > max_tokens:
+    # Per-message counts let each removal or edit adjust a running total
+    # instead of re-estimating the whole list.
+    counts = [estimate_message_tokens(message) for message in result]
+    total = sum(counts)
+
+    while total > max_tokens:
         user_indexes = [
             index for index, message in enumerate(result) if message.get("role") == "user"
         ]
@@ -145,19 +150,22 @@ def compact_to_token_budget(
         # Remove one complete turn, ending immediately before the next user turn.
         start = user_indexes[0]
         end = user_indexes[1]
+        total -= sum(counts[start:end])
         del result[start:end]
+        del counts[start:end]
 
-    if estimate_messages_tokens(result) <= max_tokens:
+    if total <= max_tokens:
         return result
 
-    for message in result:
+    for index, message in enumerate(result):
         if message.get("role") != "tool" or not message.get("content"):
             continue
         message["content"] = "[tool result stripped to fit context budget]"
-        if estimate_messages_tokens(result) <= max_tokens:
+        total += _recount(result, counts, index)
+        if total <= max_tokens:
             return result
 
-    for message in result:
+    for index, message in enumerate(result):
         if message.get("role") != "assistant":
             continue
         calls = message.get("tool_calls")
@@ -167,7 +175,16 @@ def compact_to_token_budget(
             function = call.get("function")
             if isinstance(function, dict):
                 function["arguments"] = "{}"
-        if estimate_messages_tokens(result) <= max_tokens:
+        total += _recount(result, counts, index)
+        if total <= max_tokens:
             return result
 
     return result
+
+
+def _recount(messages: list[dict[str, Any]], counts: list[int], index: int) -> int:
+    """Re-estimate one edited message; return the change in tokens."""
+    new_count = estimate_message_tokens(messages[index])
+    delta = new_count - counts[index]
+    counts[index] = new_count
+    return delta

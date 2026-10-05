@@ -71,6 +71,10 @@ _COMPACTION_NOTE = {
     ),
 }
 
+# Limits how far one response's usage can move the budget, so a provider that
+# reports odd counts cannot shrink or inflate the usable window drastically.
+_TOKEN_CALIBRATION_BOUNDS = (0.8, 2.0)
+
 _TRANSIENT_TOOL_ERRORS = frozenset(
     {ErrorType.RETRYABLE, ErrorType.CONNECTION_TIMEOUT, ErrorType.API_TIMEOUT}
 )
@@ -170,6 +174,8 @@ class NovaAgent:
         # Set once output from the web, HTTP, or MCP is in the conversation; it
         # may carry injected instructions, so outbound tools then need approval.
         self._untrusted_content_seen = False
+        # Provider tokens per locally estimated token, from the last response.
+        self._token_calibration = 1.0
         self._untrusted_output_pending = False
 
         # Initialize components
@@ -433,16 +439,19 @@ class NovaAgent:
                 max_delay=max_delay,
             )
 
+        usage = extract_usage_from_response(response_data)
         self.observability.llm(
             llm_config["model"],
             input_data=messages,
             output_data=response_data,
-            usage=extract_usage_from_response(response_data),
+            usage=usage,
         )
+        reported_usage = response_data.get("usage")
+        if isinstance(reported_usage, dict):
+            self._calibrate_token_estimate(messages, tools, reported_usage.get("prompt_tokens"))
 
         # Track cost from response
         if self.cost_tracker:
-            usage = extract_usage_from_response(response_data)
             self.cost_tracker.add_usage(**usage)
 
         # Fire post_llm_call hook
@@ -888,6 +897,35 @@ class NovaAgent:
         finally:
             self._active_trace = None
 
+    def _usable_context_tokens(self) -> int:
+        """Provider tokens available for the request after reserving the reply."""
+        context_window = get_model_context_window(
+            self.config["llm"]["model"],
+            override=self.config["llm"].get("context_window") or None,
+        )
+        response_reserve = max(1024, int(self.config["llm"].get("max_tokens", 8192)))
+        safety_margin = 1024
+        return max(1, context_window - response_reserve - safety_margin)
+
+    def _calibrate_token_estimate(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None,
+        prompt_tokens: Any,
+    ) -> None:
+        """Scale local estimates by the provider's own count of the last request.
+
+        The local tokenizer (cl100k) can differ from the model's by tens of
+        percent; the provider's reported prompt tokens are exact.
+        """
+        if type(prompt_tokens) is not int or prompt_tokens <= 0:
+            return
+        estimated = estimate_total_request_tokens(messages, tools=tools)
+        if estimated <= 0:
+            return
+        low, high = _TOKEN_CALIBRATION_BOUNDS
+        self._token_calibration = min(high, max(low, prompt_tokens / estimated))
+
     def _compact_if_needed(
         self,
         api_messages: list[dict[str, Any]],
@@ -901,15 +939,11 @@ class NovaAgent:
         target budget is halved to shed context aggressively.
         """
         total_tokens = estimate_total_request_tokens(api_messages, tools=tools)
-        context_window = get_model_context_window(
-            self.config["llm"]["model"],
-            override=self.config["llm"].get("context_window") or None,
-        )
-        response_reserve = max(1024, int(self.config["llm"].get("max_tokens", 8192)))
-        safety_margin = 1024
-        active_budget = max(1, context_window - response_reserve - safety_margin)
+        active_budget = self._usable_context_tokens()
         if force:
             active_budget = max(1, active_budget // 2)
+        # The budget is in provider tokens; estimates are local tokenizer counts.
+        active_budget = max(1, int(active_budget / self._token_calibration))
 
         if total_tokens <= active_budget:
             return api_messages, self.messages

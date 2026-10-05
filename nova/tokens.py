@@ -4,6 +4,7 @@ Uses tiktoken for accurate token counting when available,
 falls back to character-based estimation.
 """
 
+import functools
 import json
 import logging
 import threading
@@ -41,7 +42,14 @@ def estimate_tokens(text: str) -> int:
     """
     if not text:
         return 0
+    return _estimate_tokens_cached(text)
 
+
+# The agent re-estimates the whole request on every loop iteration. Message
+# contents and serialized tool schemas repeat across iterations, and str
+# caches its hash, so repeats cost a lookup instead of a full encode.
+@functools.lru_cache(maxsize=1024)
+def _estimate_tokens_cached(text: str) -> int:
     enc = _get_encoder()
     if enc is not None:
         try:
@@ -51,25 +59,31 @@ def estimate_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
 
 
+def estimate_message_tokens(msg: dict[str, Any]) -> int:
+    """Estimate tokens for one message, including framing overhead."""
+    total = 4  # role + content framing
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        total += estimate_tokens(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                total += estimate_tokens(part.get("text", "") or "")
+            elif isinstance(part, str):
+                total += estimate_tokens(part)
+    tool_calls = msg.get("tool_calls")
+    if tool_calls:
+        total += estimate_tokens(json.dumps(tool_calls, ensure_ascii=False, default=str))
+    # Sent back to providers that require it (e.g. DeepSeek thinking models).
+    reasoning = msg.get("reasoning_content")
+    if isinstance(reasoning, str):
+        total += estimate_tokens(reasoning)
+    return total
+
+
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """Estimate total tokens for a message list."""
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += estimate_tokens(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    total += estimate_tokens(part.get("text", "") or "")
-                elif isinstance(part, str):
-                    total += estimate_tokens(part)
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            total += estimate_tokens(json.dumps(tool_calls, ensure_ascii=False, default=str))
-        # Add overhead for message structure
-        total += 4  # role + content framing
-    return total
+    return sum(estimate_message_tokens(msg) for msg in messages)
 
 
 def estimate_tool_tokens(tools: list[dict[str, Any]]) -> int:

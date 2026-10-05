@@ -216,3 +216,24 @@ def test_compact_does_not_mutate_input_messages():
     compact_to_token_budget(messages, max_tokens=10, strip_tool_results=False)
 
     assert messages == original
+
+
+def test_turn_removal_estimates_each_message_once():
+    from unittest.mock import patch
+
+    from nova import microcompact, tokens
+
+    messages = [{"role": "system", "content": "sys"}]
+    for turn in range(60):
+        messages.append({"role": "user", "content": f"question {turn} " * 20})
+        messages.append({"role": "assistant", "content": f"answer {turn} " * 20})
+
+    with patch.object(
+        microcompact, "estimate_message_tokens", wraps=tokens.estimate_message_tokens
+    ) as per_message:
+        result = compact_to_token_budget(
+            messages, max_tokens=500, keep_recent=4, strip_tool_results=False
+        )
+
+    assert estimate_messages_tokens(result) <= 500
+    assert per_message.call_count <= len(messages) + 5
