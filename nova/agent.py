@@ -35,7 +35,13 @@ from nova.mcp_client import McpToolInfo, build_mcp_client
 from nova.microcompact import compact_to_token_budget
 from nova.model_metadata import get_model_context_window, load_provider_metadata
 from nova.observability import create_observability, redact
-from nova.permissions import PermissionChecker, PermissionResult, build_permission_checker
+from nova.permissions import (
+    PermissionChecker,
+    PermissionResult,
+    build_permission_checker,
+    has_untrusted_output,
+    is_egress_tool,
+)
 from nova.prompt import build_system_prompt
 from nova.providers import (
     build_client,
@@ -159,6 +165,10 @@ class NovaAgent:
         self._mcp_resource_tool_name = "mcp_read_resource"
         self.last_run_trace: Any = None
         self._active_trace: HarnessTrace | None = None
+        # Set once output from the web, HTTP, or MCP is in the conversation; it
+        # may carry injected instructions, so outbound tools then need approval.
+        self._untrusted_content_seen = False
+        self._untrusted_output_pending = False
 
         # Initialize components
         ensure_nova_home()
@@ -287,6 +297,11 @@ class NovaAgent:
                 limit=turn_limit * 4,  # ~4 msgs per turn (user+assistant+tool pairs)
             )
             self.messages = _normalize_message_history(self.messages)
+            self._untrusted_content_seen = any(
+                has_untrusted_output(call.get("function", {}).get("name", ""))
+                for message in self.messages
+                for call in message.get("tool_calls") or []
+            )
             # Always rebuild the prompt on resume so wiki notes, skills, and
             # context files reflect current state rather than the stale cache.
             self._refresh_system_prompt()
@@ -485,6 +500,8 @@ class NovaAgent:
 
         try:
             result = self._execute_tool_call_impl(tool_call, on_policy=record_policy)
+            if not denied and has_untrusted_output(name):
+                self._untrusted_output_pending = True
             verification = None
             entry = registry.get_tool(name)
             if entry is not None and entry.verifier is not None and isinstance(args, dict):
@@ -558,6 +575,7 @@ class NovaAgent:
             is_read_only=is_read_only,
             file_path=file_path,
             command=command,
+            untrusted_context=self._untrusted_content_seen,
         )
         self.observability.policy(name, allowed=perm_result.allowed, reason=perm_result.reason)
 
@@ -722,9 +740,12 @@ class NovaAgent:
         for idx, tc in enumerate(tool_calls):
             fn_name = tc.get("function", {}).get("name", "")
             entry = registry.get_tool(fn_name)
+            # Calls that may prompt for confirmation must run on this thread.
+            gated_egress = self._untrusted_content_seen and is_egress_tool(fn_name)
             if (
-                entry is not None and entry.is_read_only
-            ) or fn_name == self._mcp_resource_tool_name:
+                (entry is not None and entry.is_read_only)
+                or fn_name == self._mcp_resource_tool_name
+            ) and not gated_egress:
                 read_only_calls.append((idx, tc))
             else:
                 write_calls.append((idx, tc))
@@ -771,6 +792,12 @@ class NovaAgent:
                 logger.exception("Sequential tool call '%s' failed", fn_name)
                 results[idx] = f"Error: Tool '{fn_name}' failed: {type(exc).__name__}"
             self._report_tool_result(tc, results[idx] or "")
+
+        # The model sees this batch's output only in its next response, so the
+        # stricter policy starts with the next batch.
+        if self._untrusted_output_pending:
+            self._untrusted_content_seen = True
+            self._untrusted_output_pending = False
 
         return [r if r is not None else "Error: Unexpected None result" for r in results]
 

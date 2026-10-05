@@ -11,6 +11,7 @@ from nova.permissions import (
     build_permission_checker,
 )
 from nova.tools.path_safety import path_safety_error
+from nova.tools.registry import discover_builtin_tools
 
 # ── PermissionMode Tests ────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ def test_auto_mode_allows_read_only_tool():
 
 
 def test_ask_mode_read_only_tool_allowed():
+    discover_builtin_tools()  # read-only status comes from the tool's registration
     settings = PermissionSettings(mode=PermissionMode.ASK)
     checker = PermissionChecker(settings)
     result = checker.evaluate("read_file")
@@ -367,3 +369,33 @@ def test_sensitive_paths_match_file_tool_protection(path):
 
     assert path_safety_error(Path(path)) is not None
     assert checker.evaluate("mcp__fs__read", file_path=path).allowed is False
+
+
+class TestUntrustedContext:
+    def _checker(self, **settings) -> PermissionChecker:
+        return PermissionChecker(PermissionSettings(**settings))
+
+    def test_read_only_egress_needs_confirmation_after_untrusted_content(self):
+        result = self._checker().evaluate("http_get", is_read_only=True, untrusted_context=True)
+        assert result.allowed is True
+        assert result.requires_confirmation is True
+        assert "untrusted" in result.reason
+
+    @pytest.mark.parametrize("tool", ["web_search", "web_scrape", "http_get"])
+    def test_egress_runs_freely_before_untrusted_content(self, tool):
+        result = self._checker().evaluate(tool, is_read_only=True, untrusted_context=False)
+        assert result.requires_confirmation is False
+
+    def test_local_read_only_tools_unaffected(self):
+        result = self._checker().evaluate("read_file", is_read_only=True, untrusted_context=True)
+        assert result.requires_confirmation is False
+
+    def test_auto_mode_unaffected(self):
+        checker = self._checker(mode=PermissionMode.AUTO)
+        result = checker.evaluate("http_get", is_read_only=True, untrusted_context=True)
+        assert result.requires_confirmation is False
+
+    def test_explicitly_allowed_tool_unaffected(self):
+        checker = self._checker(allowed_tools={"http_get"})
+        result = checker.evaluate("http_get", is_read_only=True, untrusted_context=True)
+        assert result.requires_confirmation is False

@@ -22,6 +22,8 @@ permissions:
 | `auto` | All tools execute without confirmation |
 | `ask` | Read-only tools execute freely; mutating tools require confirmation (this is the **default**) |
 
+In `ask` mode, outbound network tools (`http_*`, `web_*`) also require confirmation once untrusted content is in the conversation. See [Untrusted Content](#untrusted-content).
+
 In `ask` mode, mutating tool calls prompt for interactive confirmation (`Allow? [y/N]`) both in the TUI and in the plain CLI. If confirmation is unavailable (e.g., no TTY), the tool call is denied rather than silently auto-approved.
 
 ## Defense-in-Depth Cascade
@@ -75,6 +77,19 @@ Every tool call is evaluated through these checks, in order:
 
 6. **Permission mode** — Final check based on `auto` vs `ask` mode
 
+## Untrusted Content
+
+Output from `http_*`, `web_*`, and MCP tools comes from outside your control and
+can contain instructions written to steer the agent (prompt injection). A common
+goal of such instructions is to make the agent read a local file and send its
+contents out, for example inside an `http_get` URL.
+
+So in `ask` mode, once any of those tools has returned output in the session,
+every later `http_*` or `web_*` call needs confirmation, including the normally
+read-only ones. Local read-only tools such as `read_file` still run freely, and
+the rule also applies when resuming a session that already contains such output.
+Tools listed in `allowed_tools` and all tools in `auto` mode are not affected.
+
 ## What This Does Not Guarantee
 
 The real boundary is **confirmation in `ask` mode** plus the **workspace
@@ -87,8 +102,10 @@ mistakes and obvious attacks, but they are not a sandbox:
   inspects path arguments, not command text.
 - Command deny patterns match text, so `rm -fr /` or `/bin/rm -rf /` are not
   matched by `rm -rf /`.
-- Read-only tools, including `read_file` and `http_get`, run without
-  confirmation even when earlier tool output came from an untrusted source.
+- In `auto` mode, or for tools in `allowed_tools`, outbound tools run without
+  confirmation even after untrusted content was read.
+- Untrusted content can also reach the agent through files in the workspace
+  (for example a cloned repository), which does not trigger the rule above.
 
 In `ask` mode you see every mutating call before it runs. In `auto` mode nothing
 stops a command the model decides to run, so when using `auto` with untrusted

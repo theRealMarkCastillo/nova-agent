@@ -56,6 +56,21 @@ _DEFAULT_DENIED_COMMANDS: tuple[str, ...] = (
 )
 
 
+# Network tools that can carry data off the machine in their arguments.
+_EGRESS_TOOL_PREFIXES: tuple[str, ...] = ("http_", "web_")
+# Tools whose output comes from outside the user's control.
+_UNTRUSTED_OUTPUT_PREFIXES: tuple[str, ...] = ("http_", "web_", "mcp__")
+_UNTRUSTED_OUTPUT_TOOLS: frozenset[str] = frozenset({"mcp_read_resource"})
+
+
+def is_egress_tool(tool_name: str) -> bool:
+    return tool_name.startswith(_EGRESS_TOOL_PREFIXES)
+
+
+def has_untrusted_output(tool_name: str) -> bool:
+    return tool_name.startswith(_UNTRUSTED_OUTPUT_PREFIXES) or tool_name in _UNTRUSTED_OUTPUT_TOOLS
+
+
 @dataclass
 class PermissionSettings:
     """Configurable permission settings."""
@@ -94,6 +109,7 @@ class PermissionChecker:
         is_read_only: bool | None = None,
         file_path: str | None = None,
         command: str | None = None,
+        untrusted_context: bool = False,
     ) -> PermissionResult:
         """Evaluate a tool call through the permission cascade.
 
@@ -102,6 +118,8 @@ class PermissionChecker:
             is_read_only: Whether the tool is read-only. If None, taken from its registration.
             file_path: File path argument (for path rule matching).
             command: Command string (for command deny matching).
+            untrusted_context: Whether output from an untrusted source (web, HTTP,
+                MCP) is already in the conversation.
 
         Returns:
             PermissionResult with allowed/requires_confirmation/reason.
@@ -143,10 +161,19 @@ class PermissionChecker:
             entry = registry.get_tool(tool_name)
             is_read_only = entry is not None and entry.is_read_only
 
-        if is_read_only:
+        if self.settings.mode == PermissionMode.AUTO or explicitly_allowed:
             return PermissionResult(allowed=True)
 
-        if self.settings.mode == PermissionMode.AUTO or explicitly_allowed:
+        # Injected instructions could steer a read-only network tool into
+        # sending local data out, e.g. in a URL query string.
+        if untrusted_context and is_egress_tool(tool_name):
+            return PermissionResult(
+                allowed=True,
+                requires_confirmation=True,
+                reason=(f"Tool '{tool_name}' can send data out after untrusted content was read"),
+            )
+
+        if is_read_only:
             return PermissionResult(allowed=True)
 
         # ASK mode — mutating tools require confirmation

