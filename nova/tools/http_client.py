@@ -149,9 +149,12 @@ _BLOCKED_HOSTS = frozenset(
         "metadata.ec2.internal",
         "kubernetes.default",
         "metadata.azure.com",
-        "100.64.100.64",  # EC2 metadata v2
     }
 )
+
+
+# RFC 6598 carrier-grade NAT space; ipaddress does not treat it as private.
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -206,6 +209,11 @@ def _resolve_pinned_ip(host: str) -> tuple[bool, str, str]:
             addr = ipaddress.ip_address(addr_str)
         except ValueError:
             return False, f"URL denied: {addr_str} is not a valid IP", ""
+        # Older 3.12 releases do not apply IPv4 rules to IPv4-mapped IPv6.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        if addr in _SHARED_ADDRESS_SPACE:
+            return False, f"URL denied: {host} resolves to shared address {addr_str}", ""
         if addr.is_private:
             return False, f"URL denied: {host} resolves to private address {addr_str}", ""
         if addr.is_loopback:

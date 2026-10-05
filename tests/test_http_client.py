@@ -287,3 +287,22 @@ class TestSSRFProtection:
         ok, msg = _is_url_safe("http://192.168.1.10/admin")
         assert ok is False
         assert "private" in msg.lower()
+
+
+class TestSharedAndMappedAddresses:
+    @pytest.mark.parametrize(
+        "address",
+        ["100.64.0.1", "100.127.255.254", "::ffff:100.64.0.1", "::ffff:127.0.0.1"],
+    )
+    def test_blocks_shared_and_ipv4_mapped_addresses(self, address):
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        fake_info = [(family, 1, 6, "", (address, 0))]
+        with patch("nova.tools.http_client.socket.getaddrinfo", return_value=fake_info):
+            ok, _ = _is_url_safe("https://edge.example.com/")
+        assert ok is False
+
+    def test_allows_public_address_next_to_shared_range(self):
+        fake_info = [(socket.AF_INET, 1, 6, "", ("100.128.0.1", 0))]
+        with patch("nova.tools.http_client.socket.getaddrinfo", return_value=fake_info):
+            ok, _ = _is_url_safe("https://public.example.com/")
+        assert ok is True
