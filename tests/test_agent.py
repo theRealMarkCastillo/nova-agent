@@ -210,13 +210,13 @@ def test_mcp_calls_use_normal_permission_path_and_close(
     minimal_config, mock_session_store, mock_openai_client
 ):
     mcp = FakeMcpClient()
-    agent = NovaAgent(
-        config=minimal_config,
-        openai_client=mock_openai_client,
-        session_store=mock_session_store,
-        mcp_client=mcp,
-        confirmation_callback=lambda _name, _args: True,
-    )
+    with patch("nova.agent.build_mcp_client", return_value=mcp):
+        agent = NovaAgent(
+            config=minimal_config,
+            openai_client=mock_openai_client,
+            session_store=mock_session_store,
+            confirmation_callback=lambda _name, _args: True,
+        )
     call = {"function": {"name": "mcp__server__echo", "arguments": json.dumps({"value": 1})}}
     assert agent._execute_tool_call(call) == "mcp result"
     assert mcp.calls == [("server", "echo", {"value": 1})]

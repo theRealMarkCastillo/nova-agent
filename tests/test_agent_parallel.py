@@ -403,13 +403,10 @@ def test_failed_mcp_connect_closes_owned_client(minimal_config, mock_session_sto
 
     with (
         patch("nova.agent.build_client", return_value=owned_client),
+        patch("nova.agent.build_mcp_client", return_value=mcp_client),
         pytest.raises(RuntimeError),
     ):
-        NovaAgent(
-            config=minimal_config,
-            session_store=mock_session_store,
-            mcp_client=mcp_client,
-        )
+        NovaAgent(config=minimal_config, session_store=mock_session_store)
 
     owned_client.close.assert_called_once()
     mcp_client.disconnect_all.assert_called_once()
@@ -582,3 +579,20 @@ def test_prompt_lists_exactly_the_tools_sent_to_the_api(minimal_config, mock_ses
     api_names = {d["function"]["name"] for d in agent._get_tool_definitions()}
     assert "delegate_task" not in api_names
     assert _prompt_tool_names(agent._system_prompt or "") == api_names
+
+
+def test_close_leaves_injected_mcp_client_connected(minimal_config, mock_session_store):
+    shared = MagicMock()
+    shared.list_tools.return_value = []
+    shared.list_resources.return_value = []
+    shared.connected_servers = frozenset()
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        mcp_client=shared,
+    )
+
+    agent.close()
+
+    shared.disconnect_all.assert_not_called()

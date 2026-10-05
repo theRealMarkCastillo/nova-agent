@@ -347,3 +347,46 @@ def test_delegate_result_structure():
         assert "elapsed_seconds" in parsed
         assert "error" in parsed
         assert "timeout" in parsed
+
+
+def test_subagent_shares_parent_mcp_client():
+    parent = _parent_with_tracker()
+    child = _subagent_with_usage(0, 0.0)
+    child.run.return_value = "OK"
+
+    with (
+        patch("nova.tools.delegate_tool.build_client"),
+        patch("nova.agent.NovaAgent", return_value=child) as agent_class,
+    ):
+        _delegate_task({"task": "use mcp"}, agent=parent)
+
+    assert agent_class.call_args.kwargs["mcp_client"] is parent.mcp_client
+
+
+def test_timed_out_subagent_cannot_prompt_user():
+    parent = _parent_with_tracker()
+    parent._confirmation_callback = MagicMock(return_value=True)
+    child = _subagent_with_usage(0, 0.0)
+    release = threading.Event()
+    closed = threading.Event()
+    child.close.side_effect = closed.set
+    answers: list[bool] = []
+
+    def run(*args, **kwargs):
+        release.wait(5)
+        confirm = agent_class.call_args.kwargs["confirmation_callback"]
+        answers.append(confirm("terminal", {"command": "rm -rf build"}))
+        return "late"
+
+    child.run.side_effect = run
+    with (
+        patch("nova.tools.delegate_tool.build_client"),
+        patch("nova.agent.NovaAgent", return_value=child) as agent_class,
+    ):
+        result = json.loads(_delegate_task({"task": "slow", "timeout_seconds": 1}, agent=parent))
+        release.set()
+        assert closed.wait(5)
+
+    assert result["timeout"] is True
+    assert answers == [False]
+    parent._confirmation_callback.assert_not_called()

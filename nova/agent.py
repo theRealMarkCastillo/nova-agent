@@ -159,6 +159,8 @@ class NovaAgent:
         self._confirmation_callback = confirmation_callback
         self._tool_lifecycle_callback: Callable[[str, str, str, str | None], None] | None = None
         self.workspace = workspace.resolve() if workspace else Path.cwd().resolve()
+        # An injected MCP client (e.g. a parent agent's) belongs to its caller.
+        self._owns_mcp_client = mcp_client is None
         self.mcp_client = mcp_client if mcp_client is not None else build_mcp_client(self.config)
         self._mcp_call_lock = threading.RLock()
         self._mcp_tools: dict[str, McpToolInfo] = {}
@@ -244,7 +246,7 @@ class NovaAgent:
             observer.shutdown()
         if self._owns_client and hasattr(self.client, "close"):
             self.client.close()
-        if hasattr(self, "mcp_client"):
+        if getattr(self, "_owns_mcp_client", False):
             self.mcp_client.disconnect_all()
 
     @staticmethod

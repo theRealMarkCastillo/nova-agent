@@ -1,7 +1,7 @@
 # MCP Integration
 
 **Status:** ✅ Active
-**Last Updated:** August 2026  
+**Last Updated:** October 2026  
 **Type:** GUIDE (Feature Reference)
 
 > Nova Agent supports the Model Context Protocol (MCP) with three transport types, allowing you to connect to local and remote MCP servers.
@@ -48,6 +48,9 @@ mcp:
 2. **Connection** — Nova connects to servers at startup using the specified transport
 3. **Discovery** — Tools and resources are discovered automatically
 4. **Invocation** — Discovered tools are available alongside built-in tools
+5. **Sub-agents** — `delegate_task` sub-agents reuse the parent's MCP connections instead of starting their own servers; only the agent that created the connections closes them
+
+If you pass your own `mcp_client` to `NovaAgent`, the agent does not disconnect it on `close()`; you own its lifecycle.
 
 ## Stdio Transport (Local)
 

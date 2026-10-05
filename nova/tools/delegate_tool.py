@@ -15,6 +15,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from threading import Event
@@ -120,6 +121,20 @@ def _merge_cost_into_parent(parent_agent: Any, subagent: Any | None) -> None:
         parent_tracker.merge(child_tracker.total)
 
 
+def _cancellable_confirmation(
+    parent_agent: Any, cancel_event: Event | None
+) -> Callable[[str, dict[str, Any]], bool] | None:
+    """Deny confirmations once the parent has stopped waiting for this child."""
+    confirm = getattr(parent_agent, "_confirmation_callback", None)
+    if confirm is None or cancel_event is None:
+        return confirm
+
+    def _confirm(name: str, arguments: dict[str, Any]) -> bool:
+        return not cancel_event.is_set() and confirm(name, arguments)
+
+    return _confirm
+
+
 def _run_subagent(
     task: str,
     parent_agent: Any,
@@ -174,7 +189,8 @@ def _run_subagent(
                 session_store=parent_agent.session_store,
                 wiki_memory_store=parent_agent.wiki,
                 prompt_mode="minimal",
-                confirmation_callback=getattr(parent_agent, "_confirmation_callback", None),
+                confirmation_callback=_cancellable_confirmation(parent_agent, cancel_event),
+                mcp_client=parent_agent.mcp_client,
                 workspace=parent_agent.workspace,
             )
 
