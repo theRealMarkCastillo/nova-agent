@@ -1,6 +1,6 @@
 # SPEC-005: Code and Design Review Improvement Plan
 
-**Status:** 🟡 In Progress
+**Status:** ✅ Implemented
 **Last Updated:** October 2026
 **Type:** SPEC (Implementation Plan)
 
@@ -29,9 +29,9 @@ without re-running the review.
 |-------|-------|-------|--------|
 | 0 | High-value bug fixes | H2, H3, M1 | ✅ Done (`b0ae781`, `455ffce`, `62f273c`) |
 | 1 | Correctness quick wins | M2, M3a, M7a, L1–L8 | ✅ Done (`47ee7eb`…`3894d5b`) |
-| 2 | Safety model | H1, M8, S1–S3 | 🟡 Done except the M8 auto-mode confirmation decision |
-| 3 | Architecture | M5, M7, M3b | 🟡 M5 and M3b done; M7 planned |
-| 4 | Performance | M6, M4 | 🟡 M6 done; M4 planned |
+| 2 | Safety model | H1, M8, S1–S3 | ✅ Done |
+| 3 | Architecture | M5, M7, M3b | ✅ Done |
+| 4 | Performance | M6, M4 | ✅ Done |
 
 Phases 1 and 4 have no dependencies on each other. Phase 3 should land before
 the public SDK surface in [SPEC-003](SPEC-003-NOVA_SDK_PUBLIC_API.md) is
@@ -79,7 +79,7 @@ say so and closes the paths where untrusted content can act without asking.
 Implementation status:
 
 - ✅ H1 (`fb59e06`). The flag persists for the session, not just the turn, because injected text stays in context; it is restored on resume. MCP tools already need confirmation in `ask` mode, so the gate covers `http_*` and `web_*`. Gated calls are routed off the parallel path so prompts never come from worker threads.
-- 🟡 M8 (`b765a64`). Prompt-build scanning is done, and it also fixed the scanner missing "ignore all previous instructions". 📋 **Open decision:** forcing confirmation in `auto` mode for writes to `Core/` or `inject: true` notes overrides an explicit user setting, so it awaits the maintainer's call.
+- ✅ M8 (`b765a64`, `2608f1a`). Prompt-build scanning also fixed the scanner missing "ignore all previous instructions". The maintainer approved confirmation in every mode for wiki changes that reach every prompt: `Core/` and pinned note edits, `pin`, rename into `Core/`, and vault-wide `replace`. These use a new `always_confirm` registration hook.
 - ✅ S1 (`5da058c`), S2 (`0426e50`), S3 (`14dc89e`). S3 recommends a container, VM, or dedicated OS user rather than a specific sandbox tool.
 
 | ID | Problem | Change | Acceptance |
@@ -93,6 +93,13 @@ Implementation status:
 ## Phase 3: Architecture
 
 ### M7: ToolExecutor with typed results
+
+✅ Done. `nova/tool_executor.py` owns the pipeline and `nova/tools/result.py` defines `ToolResult`; `agent.py` went from 1,247 to 811 lines. Acceptance status:
+
+- Permission is evaluated once per call.
+- Trace outcomes, lifecycle callbacks, verification fallbacks, observability, and retries all use the typed status.
+- Each call emits one tool event and one verification event.
+- **Remaining text reading:** handler strings are still converted with the `Error:` convention, in exactly one place (`ToolResult.from_output`). Handlers can opt out by returning a `ToolResult`. Converting every built-in handler was left out as low value.
 
 `agent.py` (1212 lines) repeats the tool pipeline across `_execute_tool_call`,
 `_execute_tool_call_impl`, and the parallel and sequential runners:
@@ -167,6 +174,8 @@ to the provider but never counted. The safety margin is only 1024 tokens.
 Acceptance: a long-session benchmark shows estimation work linear in new messages, with estimates within 5% of provider-reported prompt tokens.
 
 ### M4: Session search write amplification
+
+✅ Done (`1e58fb2`). Schema version 4 drops `session_fts`, its triggers, and `session_search`. Session search requires each word in the title or some user/assistant message, ranked by matching messages then recency. Words under 3 characters are ignored, as the trigram index already did. Benchmark: 2,000 messages written to one session took 67.8s before and 1.5s after. On a copy of a real 122-session database, the migration kept all data, and 25 sampled queries returned identical sessions. Older Nova versions fail to create sessions in a migrated database.
 
 `add_message` appends every message to a single `session_fts` row per session
 (`content = content || ' ' || ?`). The trigram index re-indexes the whole
