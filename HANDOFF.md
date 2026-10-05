@@ -4,46 +4,49 @@
 **Last Updated:** October 2026
 **Type:** REPORT (Session Handoff)
 
-- **Workstream:** Code/design review fixes and improvement plan ([SPEC-005](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md))
-- **Active Branch:** `main` (changes are uncommitted in the working tree, per user request to fix directly on this branch)
+- **Workstream:** Code/design review fixes ([SPEC-005](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md))
+- **Active Branch:** `main`. 21 commits on top of `863bc26`, all local and **not pushed**.
 - **Current Status:** IN_PROGRESS
 
 ## 1. Ground Truth & State
 
-A code and design review of `main` at `863bc26` produced the findings recorded in SPEC-005. The user asked for the high-value bugs to be fixed directly on this branch and for an improvement plan. Phase 0 is implemented and verified. Nothing has been committed or pushed.
+SPEC-005 phases 0, 1, and 2 are implemented, along with M5 and M3b from phase 3. Each fix landed as its own commit with regression tests. Most of those tests were confirmed to fail before the fix. See `git log --oneline 863bc26..HEAD` and the per-item status in SPEC-005.
 
-Exact files touched:
-- `nova/retry.py`: new `classify_exception` classifies OpenAI SDK, httpx, and builtin transport errors by type before message patterns (H2). `retry_with_backoff` uses it.
-- `nova/permissions.py`: a matching `allow: true` path rule no longer short-circuits when a command is present, so `terminal` keeps command-deny and confirmation checks (H3).
-- `nova/tools/file_ops.py`: shared `_atomic_write` preserves existing file mode, writes through symlinks, and applies the import-time umask to new files (M1).
-- `tests/test_retry.py`, `tests/test_permissions.py`, `tests/test_file_ops.py`: 12 regression tests; 11 failed before the fixes (`APITimeoutError` already matched its message text).
-- `docs/GUIDE-008-PERMISSIONS.md`, `docs/GUIDE-014-RETRY_AND_ERROR_HANDLING.md`: user-facing behavior.
-- `docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md` (new), `docs/DOCUMENTATION_INDEX.md`: plan and index.
-- `HANDOFF.md`: this file.
+Main behavior changes users may notice:
+- `ask` mode: once `http_*`, `web_*`, or MCP output is in the session, later `http_*`/`web_*` calls prompt for confirmation (H1).
+- A path `allow: true` rule no longer skips confirmation for `terminal` (H3).
+- The permission checker now protects the same broader sensitive-path set as the file tools, e.g. `~/.aws/*` and `.envrc` (S1).
+- A flagged `Core/` or pinned wiki note, or a flagged skill description, is replaced in the prompt by a placeholder (M8).
+- `NovaAgent.close()` no longer disconnects an injected `mcp_client`, and sub-agents share the parent's (M3b).
 
-Validation:
-- `.venv/bin/ruff check .`: passed.
-- `.venv/bin/ruff format --check .`: passed.
+Validation at HEAD:
+- `.venv/bin/ruff check .` and `.venv/bin/ruff format --check .`: passed.
 - `.venv/bin/mypy nova/`: passed, 43 source files.
-- `.venv/bin/pytest -q`: 1314 passed, 84.77% coverage.
-- `git diff --check`: flags only the existing two-space Markdown line breaks on re-dated metadata lines.
+- `.venv/bin/pytest -q`: 1356 passed, 85.39% coverage (baseline 1302, 84.68%).
+- Each test file also passes when run on its own.
+- No paid provider calls, network access, or real MCP servers were used; all are mocked.
 
-Retained history from the previous workstream (still applies): stashes `stash@{0}` (`533f21d`) and `stash@{1}` (`023ec2d`) remain intact pending authorized cleanup; the archived worktree bundle remains under `.git/cleanup-archives/`.
+Retained history from earlier workstreams: stashes `stash@{0}` (`533f21d`) and `stash@{1}` (`023ec2d`) remain intact pending authorized cleanup; the archived worktree bundle remains under `.git/cleanup-archives/`.
 
 ## 2. Active Hypothesis & Blockers
 
-No blockers. Phase 0 changes await the user's review and a decision on committing (suggested: three commits, `fix: retry SDK transport errors by exception type`, `fix: keep confirmation for commands under path allow rules`, `fix: preserve file mode and symlinks on atomic writes`, plus `docs: add SPEC-005 review improvement plan`).
+Remaining items need maintainer input before starting:
+- **M8 auto-mode decision:** should writes to `Core/` or `inject: true` notes require confirmation even in `auto` mode?
+- **M4** changes the session database schema (`session_fts` aggregation replaced by `message_search`) and needs a migration of existing user databases.
+- **M7** (ToolExecutor plus typed `ToolResult`) is a broad refactor of `nova/agent.py`, best done before freezing SPEC-003's public API.
+- **M6** (token accounting anchored on provider-reported usage) is self-contained.
 
 ## 3. Immediate Next Action (Start Here)
 
-1. Run `.venv/bin/pytest -q` to confirm 1314 passing.
-2. After the user approves commits, start SPEC-005 Phase 1 with M2 (`nova/context.py` `_CONTEXT_THREAT_PATTERNS`), adding a regression test that a context file containing `"é"` and `&#x26;` loads unmodified.
+1. Run `.venv/bin/pytest -q` to confirm 1356 passing.
+2. Push only when the maintainer authorizes it.
+3. If the maintainer approves continuing, start with M6: `nova/agent.py` `_compact_if_needed` and `nova/microcompact.py` `compact_to_token_budget`, following SPEC-005 Phase 4.
 
 ## Related Documentation
 
 | Document | Purpose |
 |----------|---------|
-| [SPEC-005 Review Improvement Plan](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md) | Findings, phases, and acceptance checks |
-| [GUIDE-008 Permissions](docs/GUIDE-008-PERMISSIONS.md) | Path-rule semantics |
+| [SPEC-005 Review Improvement Plan](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md) | Findings, per-item status, commits, acceptance checks |
+| [GUIDE-008 Permissions](docs/GUIDE-008-PERMISSIONS.md) | Untrusted-content rule, path rules, guardrail limits |
 | [GUIDE-014 Retry and Error Handling](docs/GUIDE-014-RETRY_AND_ERROR_HANDLING.md) | Exception classification |
 | [Contribution Guide](CONTRIBUTING.md) | Development and validation workflow |

@@ -29,8 +29,8 @@ without re-running the review.
 |-------|-------|-------|--------|
 | 0 | High-value bug fixes | H2, H3, M1 | ✅ Done (`b0ae781`, `455ffce`, `62f273c`) |
 | 1 | Correctness quick wins | M2, M3a, M7a, L1–L8 | ✅ Done (`47ee7eb`…`3894d5b`) |
-| 2 | Safety model | H1, M8, S1–S3 | 📋 Planned |
-| 3 | Architecture | M5, M7, M3b | 📋 Planned |
+| 2 | Safety model | H1, M8, S1–S3 | 🟡 Done except the M8 auto-mode confirmation decision |
+| 3 | Architecture | M5, M7, M3b | 🟡 M5 and M3b done; M7 planned |
 | 4 | Performance | M6, M4 | 📋 Planned |
 
 Phases 1 and 4 have no dependencies on each other. Phase 3 should land before
@@ -76,6 +76,12 @@ The real boundary today is `ask`-mode confirmation plus the workspace check.
 Denylists and the injection scanner are guardrails. This phase makes the docs
 say so and closes the paths where untrusted content can act without asking.
 
+Implementation status:
+
+- ✅ H1 (`fb59e06`). The flag persists for the session, not just the turn, because injected text stays in context; it is restored on resume. MCP tools already need confirmation in `ask` mode, so the gate covers `http_*` and `web_*`. Gated calls are routed off the parallel path so prompts never come from worker threads.
+- 🟡 M8 (`b765a64`). Prompt-build scanning is done, and it also fixed the scanner missing "ignore all previous instructions". 📋 **Open decision:** forcing confirmation in `auto` mode for writes to `Core/` or `inject: true` notes overrides an explicit user setting, so it awaits the maintainer's call.
+- ✅ S1 (`5da058c`), S2 (`0426e50`), S3 (`14dc89e`). S3 recommends a container, VM, or dedicated OS user rather than a specific sandbox tool.
+
 | ID | Problem | Change | Acceptance |
 |----|---------|--------|------------|
 | H1 | `read_file`, `http_get`, and `web_scrape` are read-only, so they are auto-approved and run in parallel. Injected instructions can read a workspace file and send it out in a URL | Track content that arrived from an untrusted source (`http_*`, `web_*`, MCP results) during a turn. Once any has arrived, require confirmation for outbound tools (`http_*`, `web_*`, MCP calls) | In `ask` mode, an `http_get` that follows a `web_scrape` in the same turn prompts; a first-call `http_get` does not |
@@ -116,6 +122,8 @@ evaluated once per call; no outcome logic reads result text.
 
 ### M5: Per-agent tool view
 
+✅ Done (`75a0fea`) in a narrower form than described below. `_builtin_tool_definitions` is the single gated list, and both the prompt summary and the API request use it. A full `ToolSet` object can come with M7.
+
 The registry is process-global. Registration depends on config and happens in
 whatever order agents are created. `prompt.py` lists every registered tool,
 while `_get_tool_definitions` filters by config. As a result, a leaf
@@ -125,6 +133,8 @@ prompt summary, the API definitions, and dispatch. Acceptance: for any config,
 the tools named in the prompt equal the tools in the API request.
 
 ### M3b: Sub-agents share parent resources
+
+✅ Done (`c466e06`). Sub-agents receive the parent's MCP client; an agent disconnects only an MCP client it created. A cancellable confirmation wrapper stops a timed-out child from prompting. The client factory was already handled in M3a (`build_client`).
 
 Each sub-agent calls `build_mcp_client(config)` and starts fresh copies of
 every MCP server. Pass the parent's MCP client (calls are already serialized by
