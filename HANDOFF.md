@@ -5,7 +5,7 @@
 **Type:** REPORT (Session Handoff)
 
 - **Workstream:** Code/design review fixes ([SPEC-005](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md))
-- **Active Branch:** `main`. Commits through `cbe3992` are pushed; M4, M8 part B, M7, and this handoff (`1e58fb2`..HEAD) are local only.
+- **Active Branch:** `main`, fully pushed to `origin/main`.
 - **Current Status:** COMPLETE
 
 ## 1. Ground Truth & State
