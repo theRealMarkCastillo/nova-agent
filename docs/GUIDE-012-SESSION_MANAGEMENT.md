@@ -1,7 +1,7 @@
 # GUIDE-012: Session Management
 
 **Status:** ✅ Active  
-**Last Updated:** August 2026  
+**Last Updated:** October 2026  
 **Type:** GUIDE (Developer & User Reference)
 
 > Nova Agent stores every conversation in a SQLite database with FTS5 full-text search. This guide covers how sessions work, how to manage them, and how to recover old conversations.
@@ -65,12 +65,18 @@ CREATE TABLE messages (
     timestamp TEXT NOT NULL
 );
 
--- FTS5 virtual tables (trigram tokenizer) for full-text search.
--- session_fts mirrors searchable session content; triggers keep
--- session_search in sync. message_search indexes individual messages.
+-- FTS5 virtual table (trigram tokenizer) indexing each message.
+CREATE VIRTUAL TABLE message_search USING fts5(
+    message_id UNINDEXED, session_id UNINDEXED, idx UNINDEXED,
+    role UNINDEXED, content, tokenize='trigram'
+);
 ```
 
 **FTS5 full-text search** enables searching session titles and content for keyword matching — no regex, no grep. Just human-readable queries.
+
+`search_sessions` returns sessions where every query word appears in the title or in some user or assistant message; the words may appear in different messages. Sessions with more matching messages rank first, then more recent ones. Tool output is searchable with `search_messages` but does not make a session match.
+
+> **Schema version 4 (October 2026):** databases from earlier versions are migrated automatically on first open. The migration drops the old `session_fts` and `session_search` tables, which re-indexed a whole session on every new message, so long sessions got progressively slower to write. No messages are lost. Older Nova versions can still read a migrated database but fail when creating a session in it, so update every installation that shares it.
 
 > ⚠️ The **trigram tokenizer** only indexes terms of 3+ characters. Searches for shorter terms (e.g. `AI`, `go`, or a single letter) return no results. Use a more specific term of 3+ characters to match reliably.
 
@@ -191,7 +197,7 @@ Nova calls `PRAGMA optimize` automatically on session close.
 
 Sessions are **never auto-deleted**. They persist indefinitely until you remove them manually. This is intentional — you might need to pick up a conversation from months ago.
 
-Deleting a session removes its messages **and** purges them from the full-text search index (`session_search` and `message_search`), so deleted conversation content is not recoverable via `search_sessions` or `search_messages`.
+Deleting a session removes its messages **and** purges them from the full-text search index (`message_search`), so deleted conversation content is not recoverable via `search_sessions` or `search_messages`.
 
 To delete old sessions directly:
 
@@ -199,8 +205,6 @@ To delete old sessions directly:
 sqlite3 ~/.nova/sessions/sessions.db \
   "DELETE FROM messages       WHERE session_id IN (SELECT session_id FROM sessions WHERE created_at < '2026-01-01');
    DELETE FROM message_search WHERE session_id IN (SELECT session_id FROM sessions WHERE created_at < '2026-01-01');
-   DELETE FROM session_search WHERE session_id IN (SELECT session_id FROM sessions WHERE created_at < '2026-01-01');
-   DELETE FROM session_fts    WHERE session_id IN (SELECT session_id FROM sessions WHERE created_at < '2026-01-01');
    DELETE FROM sessions       WHERE created_at < '2026-01-01';"
 ```
 

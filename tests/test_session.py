@@ -54,20 +54,91 @@ def test_replace_messages_rebuilds_message_count_and_search_content():
         assert store.search_sessions("old") == []
 
 
-def test_replace_messages_does_not_duplicate_session_search_row():
+def test_search_returns_each_session_once():
     with tempfile.TemporaryDirectory() as tmp:
         store = SessionStore(Path(tmp) / "test.db")
-        sid = store.create_session()
-        store.replace_messages(sid, [{"role": "user", "content": "hello world"}])
+        sid = store.create_session(title="hello there")
+        store.replace_messages(
+            sid,
+            [
+                {"role": "user", "content": "hello world"},
+                {"role": "assistant", "content": "hello again"},
+            ],
+        )
 
-        with store._connection() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM session_search WHERE session_id = ?", (sid,)
-            ).fetchone()[0]
-        assert count == 1
-        # Search must return the session exactly once (no duplicate rows).
         results = store.search_sessions("hello")
         assert [r["session_id"] for r in results].count(sid) == 1
+
+
+def test_search_sessions_ranks_by_matching_messages():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = SessionStore(Path(tmp) / "test.db")
+        many = store.create_session(title="deploy notes")
+        for text in ("kubernetes rollout", "kubernetes pods", "kubernetes logs"):
+            store.add_message(many, "user", text)
+        once = store.create_session(title="misc")
+        store.add_message(once, "user", "kubernetes question")
+
+        results = store.search_sessions("kubernetes")
+        assert [r["session_id"] for r in results] == [many, once]
+
+
+def test_search_sessions_ignores_tool_output():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = SessionStore(Path(tmp) / "test.db")
+        sid = store.create_session(title="build")
+        store.add_message(sid, "user", "run the build")
+        store.add_message(sid, "tool", "zanzibar.log written", tool_call_id="t1")
+
+        assert store.search_sessions("zanzibar") == []
+        assert store.search_messages("zanzibar")[0]["session_id"] == sid
+
+
+def test_schema_has_no_aggregated_session_index():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = SessionStore(Path(tmp) / "test.db")
+        with store._connection() as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert "session_fts" not in tables
+        assert "session_search" not in tables
+        assert version == 4
+
+
+def test_version_3_database_migrates_without_losing_search():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "test.db"
+        store = SessionStore(db)
+        sid = store.create_session(title="Legacy Planning")
+        store.add_message(sid, "user", "quarterly roadmap review")
+        with closing(sqlite3.connect(db)) as conn, conn:
+            conn.executescript(
+                """
+                CREATE TABLE session_fts (session_id TEXT PRIMARY KEY, title TEXT, content TEXT);
+                CREATE VIRTUAL TABLE session_search
+                    USING fts5(session_id UNINDEXED, title, content, tokenize='trigram');
+                CREATE TRIGGER session_fts_insert AFTER INSERT ON session_fts BEGIN
+                    INSERT INTO session_search(session_id, title, content)
+                    VALUES (new.session_id, new.title, new.content);
+                END;
+                CREATE TRIGGER session_fts_update AFTER UPDATE ON session_fts BEGIN
+                    UPDATE session_search SET content = new.content
+                    WHERE session_id = new.session_id;
+                END;
+                PRAGMA user_version = 3;
+                """
+            )
+
+        migrated = SessionStore(db)
+        with migrated._connection() as conn:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+        assert not {"session_fts", "session_search", "session_fts_insert"} & names
+        assert version == 4
+        assert migrated.search_sessions("roadmap")[0]["session_id"] == sid
+        assert migrated.search_sessions("legacy")[0]["session_id"] == sid
+        migrated.add_message(sid, "assistant", "noted")
 
 
 def test_delete_session_purges_message_search_index():

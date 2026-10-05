@@ -83,56 +83,24 @@ class SessionStore:
 
                 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
                     ON sessions(updated_at);
-
-                CREATE TABLE IF NOT EXISTS session_fts (
-                    session_id TEXT PRIMARY KEY,
-                    title TEXT,
-                    content TEXT,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
-                );
-
-                CREATE TRIGGER IF NOT EXISTS session_fts_insert
-                    AFTER INSERT ON session_fts
-                BEGIN
-                    INSERT INTO session_search(session_id, title, content)
-                    VALUES (new.session_id, new.title, new.content);
-                END;
-
-                CREATE TRIGGER IF NOT EXISTS session_fts_update
-                    AFTER UPDATE ON session_fts
-                BEGIN
-                    UPDATE session_search
-                    SET title = new.title, content = new.content
-                    WHERE session_id = new.session_id;
-                END;
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
             if "tool_call_id" not in columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
             if "reasoning_content" not in columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
-            self._ensure_fts_trigram(conn)
+            self._migrate_search_indexes(conn)
 
-    def _ensure_fts_trigram(self, conn: sqlite3.Connection) -> None:
-        """Create or migrate session_search to use the FTS5 trigram tokenizer.
+    def _migrate_search_indexes(self, conn: sqlite3.Connection) -> None:
+        """Bring the full-text indexes to the current schema (user_version 4).
 
-        The trigram tokenizer enables substring and fuzzy matching. Existing
-        databases using the default unicode tokenizer are migrated automatically
-        by dropping and repopulating from session_fts (which is the source of truth).
-        user_version 3 marks the migrations as complete.
+        Version 3 added ``message_search``, a trigram index of each message.
+        Version 4 removed ``session_fts``/``session_search``, which appended
+        every message to one row per session and re-indexed the whole session
+        on each write. Session search now queries ``message_search`` instead,
+        so dropping them loses nothing.
         """
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < 2:
-            conn.execute("DROP TABLE IF EXISTS session_search")
-            conn.execute(
-                "CREATE VIRTUAL TABLE session_search "
-                "USING fts5(session_id UNINDEXED, title, content, tokenize='trigram')"
-            )
-            conn.execute(
-                "INSERT INTO session_search(session_id, title, content) "
-                "SELECT session_id, title, content FROM session_fts"
-            )
-            version = 2
         if version < 3:
             conn.execute("DROP TABLE IF EXISTS message_search")
             conn.execute(
@@ -144,7 +112,12 @@ class SessionStore:
                 "INSERT INTO message_search(message_id, session_id, idx, role, content) "
                 "SELECT id, session_id, idx, role, content FROM messages"
             )
-            conn.execute("PRAGMA user_version = 3")
+        if version < 4:
+            conn.execute("DROP TRIGGER IF EXISTS session_fts_insert")
+            conn.execute("DROP TRIGGER IF EXISTS session_fts_update")
+            conn.execute("DROP TABLE IF EXISTS session_search")
+            conn.execute("DROP TABLE IF EXISTS session_fts")
+            conn.execute("PRAGMA user_version = 4")
 
     def create_session(
         self,
@@ -165,10 +138,6 @@ class SessionStore:
                 "INSERT INTO sessions (session_id, created_at, updated_at, model, system_prompt, title, message_count) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0)",
                 (session_id, now, now, model, system_prompt, title),
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO session_fts (session_id, title, content) VALUES (?, ?, ?)",
-                (session_id, title, ""),
             )
 
         logger.info("Created session %s", session_id)
@@ -223,12 +192,6 @@ class SessionStore:
                     "UPDATE sessions SET updated_at = ?, message_count = message_count + 1 WHERE session_id = ?",
                     (now, session_id),
                 )
-                # Keep FTS content in sync so search_sessions actually finds messages
-                if role in ("user", "assistant") and content:
-                    conn.execute(
-                        "UPDATE session_fts SET content = content || ' ' || ? WHERE session_id = ?",
-                        (content, session_id),
-                    )
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
@@ -320,20 +283,12 @@ class SessionStore:
             )
 
     def update_title(self, session_id: str, title: str):
-        """Update a session title and its search indexes."""
+        """Update a session title."""
         now = datetime.now().isoformat()
         with self._connection() as conn:
             conn.execute(
                 "UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?",
                 (title, now, session_id),
-            )
-            conn.execute(
-                "UPDATE session_fts SET title = ? WHERE session_id = ?",
-                (title, session_id),
-            )
-            conn.execute(
-                "UPDATE session_search SET title = ? WHERE session_id = ?",
-                (title, session_id),
             )
 
     def replace_messages(self, session_id: str, messages: list[dict]) -> None:
@@ -343,9 +298,6 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM message_search WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM session_fts WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM session_search WHERE session_id = ?", (session_id,))
-            content_parts: list[str] = []
             for idx, message in enumerate(messages):
                 content = message.get("content") or ""
                 role = message.get("role", "")
@@ -370,16 +322,6 @@ class SessionStore:
                     "VALUES (?, ?, ?, ?, ?)",
                     (cursor.lastrowid, session_id, idx, role, content),
                 )
-                if role in ("user", "assistant") and content:
-                    content_parts.append(content)
-            conn.execute(
-                "INSERT INTO session_fts (session_id, title, content) "
-                "SELECT session_id, title, ? FROM sessions WHERE session_id = ?",
-                (" ".join(content_parts), session_id),
-            )
-            # session_search is populated by the session_fts_insert trigger — a
-            # second explicit insert here would duplicate the row and cause
-            # search_sessions to return the same session twice.
             conn.execute(
                 "UPDATE sessions SET message_count = ?, updated_at = ? WHERE session_id = ?",
                 (len(messages), now, session_id),
@@ -415,8 +357,6 @@ class SessionStore:
                 return False
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM message_search WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM session_fts WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM session_search WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         logger.info("Deleted session %s", session_id)
         return True
@@ -435,34 +375,47 @@ class SessionStore:
                 conn.execute(
                     f"DELETE FROM message_search WHERE session_id IN ({placeholders})", old_ids
                 )
-                conn.execute(
-                    f"DELETE FROM session_fts WHERE session_id IN ({placeholders})", old_ids
-                )
-                conn.execute(
-                    f"DELETE FROM session_search WHERE session_id IN ({placeholders})", old_ids
-                )
                 conn.execute(f"DELETE FROM sessions WHERE session_id IN ({placeholders})", old_ids)
         logger.info("Pruned %d sessions older than %d days", len(old_ids), older_than_days)
         return len(old_ids)
 
     def search_sessions(self, query: str, limit: int = 10) -> list[dict]:
-        """Search sessions using FTS5 trigram index."""
-        # Quote each whitespace-delimited token so user input cannot add FTS syntax.
-        tokens = re.findall(r"\S+", query.strip())
+        """Find sessions where every query word appears in the title or a message.
+
+        Words may appear in different messages. Sessions with more matching
+        user/assistant messages rank first, then more recent ones.
+        """
+        # The trigram index cannot match words under 3 characters, so they are
+        # ignored, as the index itself does within a multi-word query.
+        tokens = [token for token in re.findall(r"\S+", query.strip()) if len(token) >= 3]
         if not tokens:
             return []
         # Quote each token so FTS operators and punctuation are data, not syntax.
-        fts_query = " ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+        quoted = [f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens]
+        message_match = (
+            "SELECT session_id FROM message_search "
+            "WHERE message_search MATCH ? AND role IN ('user', 'assistant')"
+        )
+        token_clause = (
+            f"(instr(lower(coalesce(s.title, '')), lower(?)) > 0 "
+            f"OR s.session_id IN ({message_match}))"
+        )
+        params: list[object] = [" OR ".join(quoted)]
+        for token, phrase in zip(tokens, quoted, strict=True):
+            params.extend([token, phrase])
+        params.append(limit)
+        sql = (
+            "WITH hits AS ("
+            "SELECT session_id, COUNT(*) AS matches FROM message_search "
+            "WHERE message_search MATCH ? AND role IN ('user', 'assistant') "
+            "GROUP BY session_id) "
+            "SELECT s.session_id, s.title, s.updated_at, s.message_count "
+            "FROM sessions s LEFT JOIN hits h ON h.session_id = s.session_id "
+            f"WHERE {' AND '.join([token_clause] * len(tokens))} "
+            "ORDER BY COALESCE(h.matches, 0) DESC, s.updated_at DESC LIMIT ?"
+        )
         try:
             with self._connection() as conn:
-                cursor = conn.execute(
-                    "SELECT s.session_id, s.title, s.updated_at, s.message_count "
-                    "FROM sessions s "
-                    "JOIN session_search fs ON s.session_id = fs.session_id "
-                    "WHERE session_search MATCH ? "
-                    "ORDER BY rank LIMIT ?",
-                    (fts_query, limit),
-                )
                 return [
                     {
                         "session_id": row[0],
@@ -470,12 +423,12 @@ class SessionStore:
                         "updated_at": row[2],
                         "message_count": row[3],
                     }
-                    for row in cursor.fetchall()
+                    for row in conn.execute(sql, params).fetchall()
                 ]
         except sqlite3.OperationalError as e:
             # FTS5 treats characters like ( ) : ^ - as query syntax; a hostile
             # or accidental operator string must degrade to no results.
-            logger.warning("Session search rejected query %r: %s", fts_query[:80], e)
+            logger.warning("Session search rejected query %r: %s", query[:80], e)
             return []
 
     def search_messages(
