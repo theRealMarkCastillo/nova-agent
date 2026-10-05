@@ -18,6 +18,8 @@ from pathlib import Path
 
 import yaml
 
+from nova.context import find_content_threats
+
 logger = logging.getLogger(__name__)
 
 _INVALID_CHARS = re.compile(r'[\\:*?"<>|]')
@@ -660,6 +662,13 @@ class WikiMemory:
             content = parsed["content"].strip()
             if not content:
                 continue
+            # These notes reach every future system prompt; anything the model
+            # was tricked into writing here would otherwise persist.
+            if threats := find_content_threats(content):
+                logger.warning("Wiki note %s blocked: %s", md_file.name, ", ".join(threats))
+                content = (
+                    f"[BLOCKED: note contained potential prompt injection ({', '.join(threats)})]"
+                )
             section = f"### [[{title}]]\n{content}"
             remaining = max_chars - total - (2 if sections else 0)
             if remaining <= 0:

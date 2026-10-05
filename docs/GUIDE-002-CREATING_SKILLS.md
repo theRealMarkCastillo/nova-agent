@@ -1,7 +1,7 @@
 # Creating Custom Skills
 
 **Status:** ✅ Active  
-**Last Updated:** May 2026  
+**Last Updated:** October 2026  
 **Type:** GUIDE (Developer Reference)
 
 > Skills are markdown files that give Nova specialized knowledge for specific domains — coding conventions, deployment workflows, API patterns, or anything else you repeat often. This guide covers everything you need to write effective skills.
@@ -63,6 +63,8 @@ The body of the skill goes here. Write it as instructions to the agent.
 | `name` | Recommended | Identifier used in `skill_view(name)`. Defaults to directory name. |
 | `category` | No | Groups skills in the index. Default: `"general"` |
 | `description` | Recommended | One-line summary shown in the skills index. Keep it under 200 chars. |
+
+Descriptions appear in every system prompt, so they are scanned for prompt-injection patterns. A flagged description is shown as `[description withheld: potential prompt injection]`.
 
 ---
 

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import yaml
 
+from nova.context import find_content_threats
+
 logger = logging.getLogger(__name__)
 
 
@@ -138,7 +140,10 @@ def build_skills_prompt(
     for category in sorted(by_category.keys()):
         lines.append(f'  <category name="{category}">')
         for skill in by_category[category]:
-            lines.append(f'    <skill name="{skill["name"]}">{skill["description"]}</skill>')
+            description = skill["description"]
+            if find_content_threats(description):
+                description = "[description withheld: potential prompt injection]"
+            lines.append(f'    <skill name="{skill["name"]}">{description}</skill>')
         lines.append("  </category>")
 
     lines.append("</skills>")

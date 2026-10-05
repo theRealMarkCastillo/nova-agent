@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 # Threat patterns for prompt injection scanning
 # Patterns are checked against unicode-normalized content (NFKC form)
 _CONTEXT_THREAT_PATTERNS = [
-    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (
+        r"ignore\s+(all\s+|any\s+)?(the\s+)?(previous|all|above|prior|earlier)\s+"
+        r"(instructions|directions|rules)",
+        "prompt_injection",
+    ),
     (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
     (r"system\s+prompt\s+override", "sys_prompt_override"),
     (r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)", "disregard_rules"),

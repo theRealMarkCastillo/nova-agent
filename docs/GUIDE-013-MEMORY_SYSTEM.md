@@ -1,7 +1,7 @@
 # GUIDE-013: Memory System (Obsidian-Compatible Wiki)
 
 **Status:** ✅ Active
-**Last Updated:** August 2026
+**Last Updated:** October 2026
 **Type:** GUIDE (Developer & User Reference)
 
 > Nova's memory is a persistent wiki of Obsidian-compatible markdown notes. Notes survive across sessions, link to each other with `[[wikilinks]]`, and can be browsed directly in Obsidian.
@@ -106,6 +106,8 @@ Notes in `Core/` are **special**: their **full content** is injected into every 
 | Everything else | Title-only index of 10 most recent | Reference knowledge, project state, people |
 
 **Keep `Core/` short.** Every line there costs tokens on every turn. Use it for facts the agent should *always* know without searching.
+
+**Injected notes are scanned.** `Core/` notes and notes with `inject: true` are checked for prompt-injection patterns each time the prompt is built. A flagged note is replaced by a `[BLOCKED: …]` placeholder in the prompt; the file itself is left unchanged so you can review it. This keeps an instruction that the agent was tricked into saving from persisting into every later session. It is a pattern check, not a guarantee, so review what gets written to `Core/`.
 
 ---
 
