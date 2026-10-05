@@ -7,6 +7,7 @@ Loads global personality (SOUL.md from ~/.nova/) and project context files
 - Prompt injection scanning with unicode normalization
 """
 
+import html
 import logging
 import re
 import unicodedata
@@ -33,9 +34,9 @@ _CONTEXT_THREAT_PATTERNS = [
     (r"you\s+are\s+now\s+(in\s+)?(developer|debug|unrestricted)\s+mode", "mode_switch"),
     (r"output\s+(only|just)\s+(the\s+)?(raw|full)\s+(response|answer)", "output_manipulation"),
     (r"base64\s*:\s*[A-Za-z0-9+/=]{20,}", "base64_payload"),
-    (r"&#x[0-9a-fA-F]+;", "html_entity_encoding"),
-    (r"\\u[0-9a-fA-F]{4}", "unicode_escape"),
 ]
+
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 # Invisible/zero-width characters that can be used to hide injection payloads
 _CONTEXT_INVISIBLE_CHARS = {
@@ -124,12 +125,15 @@ def load_global_personality(soul_path: Path | None = None) -> str | None:
 def _normalize_for_scanning(content: str) -> str:
     """Normalize content for injection scanning.
 
+    - Decodes HTML entities and ``\\uXXXX`` escapes so encoded payloads are
+      matched by the plain-text patterns instead of blocking every escape
     - Unicode NFKC normalization (converts homoglyphs to canonical form)
     - Strips invisible/zero-width characters
     - Lowercases for pattern matching
     """
+    decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), html.unescape(content))
     # NFKC normalization: converts compatibility characters to canonical form
-    normalized = unicodedata.normalize("NFKC", content)
+    normalized = unicodedata.normalize("NFKC", decoded)
     # Remove invisible/zero-width characters
     normalized = "".join(ch for ch in normalized if ch not in _CONTEXT_INVISIBLE_CHARS)
     return normalized.lower()
@@ -153,8 +157,10 @@ def find_content_threats(content: str) -> list[str]:
     # Normalize content for scanning (NFKC + strip invisible chars)
     normalized = _normalize_for_scanning(content)
 
+    # A leading byte order mark is how many editors save UTF-8, not a payload.
+    body = content.removeprefix("\ufeff")
     for char in sorted(_CONTEXT_INVISIBLE_CHARS, key=ord):
-        if char in content:
+        if char in body:
             findings.append(f"invisible unicode U+{ord(char):04X}")
 
     for pattern, pid in _CONTEXT_THREAT_PATTERNS:
