@@ -1,6 +1,7 @@
 """Tests for parallel tool execution in agent."""
 
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -448,3 +449,59 @@ def test_parallel_tool_failure_hides_exception_message(minimal_config, mock_sess
         results = agent._execute_tool_calls_parallel([call])
 
     assert results == ["Error: Tool 'read_file' failed: RuntimeError"]
+
+
+def _retry_agent(minimal_config, mock_session_store, tmp_path) -> NovaAgent:
+    minimal_config["agent"]["tool_retry_max_attempts"] = 2
+    return NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+        workspace=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_output", "expected_calls"),
+    [
+        ("Error: Connection reset by peer", 3),
+        ("Error: 429 Too Many Requests", 3),
+        ("Error: File not found: connection.py", 1),
+        ("Error: Search text not found in reset_db.sql", 1),
+    ],
+)
+def test_read_only_tool_retries_only_transient_errors(
+    minimal_config, mock_session_store, tmp_path, tool_output, expected_calls
+):
+    agent = _retry_agent(minimal_config, mock_session_store, tmp_path)
+    call = {"id": "r", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}}
+
+    with (
+        patch("nova.agent.registry.dispatch", return_value=tool_output) as dispatch,
+        patch.object(agent, "_wait_unless_interrupted", return_value=False),
+    ):
+        agent._execute_tool_call_impl(call)
+
+    assert dispatch.call_count == expected_calls
+
+
+def test_interrupt_during_tool_retry_wait_stops_retrying(
+    minimal_config, mock_session_store, tmp_path
+):
+    agent = _retry_agent(minimal_config, mock_session_store, tmp_path)
+    call = {"id": "r", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}}
+    interrupted = False
+    agent._interrupt_check = lambda: interrupted
+
+    def dispatch(*args, **kwargs):
+        nonlocal interrupted
+        interrupted = True  # user presses Ctrl+C while the first attempt runs
+        return "Error: Connection reset by peer"
+
+    with patch("nova.agent.registry.dispatch", side_effect=dispatch) as mock_dispatch:
+        start = time.monotonic()
+        result = agent._execute_tool_call_impl(call)
+
+    assert result.startswith("[Interrupted")
+    assert mock_dispatch.call_count == 1
+    assert time.monotonic() - start < 0.5

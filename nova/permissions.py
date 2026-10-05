@@ -75,21 +75,6 @@ _DEFAULT_DENIED_COMMANDS: tuple[str, ...] = (
     "init 6*",
 )
 
-# Tools that mutate state (need confirmation in ask mode)
-_MUTATING_TOOLS: frozenset[str] = frozenset(
-    {
-        "write_file",
-        "patch_file",
-        "terminal",
-        "skill_manage",
-        "wiki",
-        "delegate_task",
-        "http_post",
-        "http_put",
-        "http_delete",
-    }
-)
-
 
 @dataclass
 class PermissionSettings:
@@ -254,10 +239,6 @@ class PermissionChecker:
             if any(fnmatch.fnmatch(segment.strip(), normalized_pattern) for segment in segments):
                 return True
         return False
-
-    def is_mutating_tool(self, tool_name: str) -> bool:
-        """Check if a tool is considered mutating (not read-only)."""
-        return tool_name in _MUTATING_TOOLS
 
 
 def build_permission_checker(config: dict, *, workspace: Path | None = None) -> PermissionChecker:

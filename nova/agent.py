@@ -65,6 +65,10 @@ _COMPACTION_NOTE = {
     ),
 }
 
+_TRANSIENT_TOOL_ERRORS = frozenset(
+    {ErrorType.RETRYABLE, ErrorType.CONNECTION_TIMEOUT, ErrorType.API_TIMEOUT}
+)
+
 
 class ContextBudgetError(ValueError):
     """Raised when the system prompt and active turn cannot fit the model window."""
@@ -153,8 +157,6 @@ class NovaAgent:
         self._mcp_call_lock = threading.RLock()
         self._mcp_tools: dict[str, McpToolInfo] = {}
         self._mcp_resource_tool_name = "mcp_read_resource"
-        # Token estimate cache: hash(content) → token_count (bounded to 2048 entries)
-        self._token_cache: dict[int, int] = {}
         self.last_run_trace: Any = None
         self._active_trace: HarnessTrace | None = None
 
@@ -443,26 +445,14 @@ class NovaAgent:
             interrupt_check=getattr(self, "_interrupt_check", None),
         )
 
-    @staticmethod
-    def _is_transient_error(error_msg: str) -> bool:
-        """Check if an error is transient (retryable) vs permanent."""
-        error_lower = error_msg.lower()
-        transient_keywords = {
-            "timeout",
-            "timed out",
-            "connection",
-            "reset",
-            "refused",
-            "temporarily unavailable",
-            "too many requests",
-            "rate limit",
-            "502",
-            "503",
-            "504",
-            "connection error",
-            "deadline",
-        }
-        return any(kw in error_lower for kw in transient_keywords)
+    def _wait_unless_interrupted(self, seconds: float) -> bool:
+        """Sleep up to ``seconds``; return True as soon as the user interrupts."""
+        deadline = time.monotonic() + seconds
+        while (remaining := deadline - time.monotonic()) > 0:
+            if self._interrupt_check is not None and self._interrupt_check():
+                return True
+            time.sleep(min(0.1, remaining))
+        return self._interrupt_check is not None and self._interrupt_check()
 
     def _execute_tool_call(self, tool_call: dict) -> str:
         function = tool_call.get("function", {})
@@ -638,7 +628,7 @@ class NovaAgent:
                 is_read_only
                 and isinstance(result, str)
                 and result.startswith("Error:")
-                and self._is_transient_error(result)
+                and classify_error(message=result) in _TRANSIENT_TOOL_ERRORS
                 and attempt < max_retries
             )
             if is_transient:
@@ -651,7 +641,8 @@ class NovaAgent:
                     wait_time,
                     result[:100],
                 )
-                time.sleep(wait_time)
+                if self._wait_unless_interrupted(wait_time):
+                    return "[Interrupted by user before tool execution]"
                 continue
 
             # Success or permanent error — return
@@ -806,52 +797,12 @@ class NovaAgent:
             )
             self._tool_lifecycle_callback(call_id, name, status, result)
 
-    def _estimate_messages_tokens_cached(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate message list tokens using a per-agent content cache.
-
-        Messages that haven't changed since the last call are not re-encoded.
-        Cache is bounded to 2048 entries to prevent unbounded growth.
-        """
-
-        from nova.tokens import estimate_tokens
-
-        total = 0
-        for msg in messages:
-            content = msg.get("content", "")
-            serialized = json.dumps(msg, ensure_ascii=False, sort_keys=True, default=str)
-            key = hash(serialized)
-
-            if key not in self._token_cache:
-                if len(self._token_cache) >= 2048:
-                    # Evict a random entry to stay bounded
-                    self._token_cache.pop(next(iter(self._token_cache)))
-                if isinstance(content, str):
-                    subtotal = estimate_tokens(content)
-                elif isinstance(content, list):
-                    subtotal = 0
-                    for part in content:
-                        if isinstance(part, dict):
-                            subtotal += estimate_tokens(part.get("text", "") or "")
-                        elif isinstance(part, str):
-                            subtotal += estimate_tokens(part)
-                else:
-                    subtotal = 0
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                    subtotal += estimate_tokens(
-                        json.dumps(tool_calls, ensure_ascii=False, default=str)
-                    )
-                self._token_cache[key] = subtotal
-            total += self._token_cache[key] + 4  # +4 for message framing
-
-        return total
-
     @staticmethod
     def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
         """Truncate text to fit within a token budget.
 
-        Uses head/tail truncation (70/20 ratio) to preserve beginning
-        and end of the content.
+        Keeps roughly 78% of the retained characters from the head and 22%
+        from the tail, around a truncation marker.
         """
         from nova.tokens import estimate_tokens
 

@@ -306,27 +306,6 @@ def test_empty_denied_commands_keeps_builtin_protection():
     assert result.allowed is False
 
 
-# ── is_mutating_tool ────────────────────────────────────────────────────────
-
-
-def test_is_mutating_tool_terminal():
-    settings = PermissionSettings()
-    checker = PermissionChecker(settings)
-    assert checker.is_mutating_tool("terminal") is True
-
-
-def test_is_mutating_tool_read_file():
-    settings = PermissionSettings()
-    checker = PermissionChecker(settings)
-    assert checker.is_mutating_tool("read_file") is False
-
-
-def test_is_mutating_tool_unknown():
-    settings = PermissionSettings()
-    checker = PermissionChecker(settings)
-    assert checker.is_mutating_tool("unknown_tool") is False
-
-
 def test_path_allow_rule_does_not_skip_command_confirmation(tmp_path: Path):
     checker = PermissionChecker(
         PermissionSettings(

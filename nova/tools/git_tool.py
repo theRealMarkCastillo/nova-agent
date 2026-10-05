@@ -5,11 +5,11 @@ Integrates with permission system to prevent destructive operations.
 """
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from nova.tasks import sanitize_environment
 from nova.tools.path_safety import path_safety_error
 from nova.tools.registry import registry
 
@@ -156,12 +156,6 @@ def _run_git_command(repo: str, *args: str, **kwargs: Any) -> tuple[int, str, st
 
     cmd = ["git"] + list(args)
     logger.info("Running git command: %s (in %s)", " ".join(cmd), repo_path)
-    secret_markers = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not any(marker in key.upper() for marker in secret_markers)
-    }
 
     try:
         result = subprocess.run(
@@ -170,7 +164,7 @@ def _run_git_command(repo: str, *args: str, **kwargs: Any) -> tuple[int, str, st
             capture_output=True,
             text=True,
             timeout=30.0,
-            env=env,
+            env=sanitize_environment(),
         )
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired as e:
