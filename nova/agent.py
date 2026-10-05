@@ -185,15 +185,15 @@ class NovaAgent:
         self.client: Any = (
             openai_client if openai_client is not None else build_client(self.config["llm"])
         )
-        load_provider_metadata(self.client)
-
-        # Discover tools (pass config so delegation tool can be gated)
-        # Must happen before _create_session so system prompt includes tool summaries
-        discover_builtin_tools(self.config)
-        self.mcp_client.connect_all()
-        self._refresh_mcp_tools()
-
         try:
+            load_provider_metadata(self.client)
+
+            # Discover tools (pass config so delegation tool can be gated)
+            # Must happen before _create_session so system prompt includes tool summaries
+            discover_builtin_tools(self.config)
+            self.mcp_client.connect_all()
+            self._refresh_mcp_tools()
+
             # Sub-agent depth tracking
             self.depth: int = self.config.get("_subagent_depth", 0)
             max_spawn_depth = self.config.get("delegation", {}).get("max_spawn_depth", 2)
@@ -749,6 +749,7 @@ class NovaAgent:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_idx = {}
                 for idx, tc in read_only_calls:
+                    self._announce_tool(tc)
                     context = contextvars.copy_context()
                     future_to_idx[executor.submit(context.run, self._execute_tool_call, tc)] = idx
 
@@ -756,19 +757,12 @@ class NovaAgent:
                     idx = future_to_idx[future]
                     try:
                         results[idx] = future.result()
-                    except Exception as e:
+                    except Exception as exc:
                         fn_name = tool_calls[idx].get("function", {}).get("name", "")
-                        logger.error("Parallel tool call '%s' failed: %s", fn_name, e)
-                        results[idx] = f"Error: Tool '{fn_name}' failed: {e}"
+                        logger.exception("Parallel tool call '%s' failed", fn_name)
+                        results[idx] = f"Error: Tool '{fn_name}' failed: {type(exc).__name__}"
 
                     self._report_tool_result(tool_calls[idx], results[idx] or "")
-
-                    # Report tool name to UI callback
-                    tool_cb = getattr(self, "_tool_callback", None)
-                    if tool_cb:
-                        fn_name = tool_calls[idx].get("function", {}).get("name", "")
-                        if fn_name:
-                            tool_cb(fn_name)
 
         # Execute write/mutate tools sequentially
         for idx, tc in write_calls:
@@ -778,11 +772,7 @@ class NovaAgent:
                 results[idx] = interrupted_result
                 self._report_tool_result(tc, interrupted_result)
                 continue
-            tool_cb = getattr(self, "_tool_callback", None)
-            if tool_cb:
-                fn_name = tc.get("function", {}).get("name", "")
-                if fn_name:
-                    tool_cb(fn_name)
+            self._announce_tool(tc)
             try:
                 results[idx] = self._execute_tool_call(tc)
             except Exception as exc:
@@ -792,6 +782,12 @@ class NovaAgent:
             self._report_tool_result(tc, results[idx] or "")
 
         return [r if r is not None else "Error: Unexpected None result" for r in results]
+
+    def _announce_tool(self, tool_call: dict) -> None:
+        tool_cb = getattr(self, "_tool_callback", None)
+        name = tool_call.get("function", {}).get("name", "")
+        if tool_cb and name:
+            tool_cb(name)
 
     def _report_tool_start(self, tool_call: dict) -> None:
         call_id = tool_call.get("id", "")

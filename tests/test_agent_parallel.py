@@ -391,3 +391,60 @@ def test_trace_evaluates_policy_once(minimal_config, mock_session_store, tmp_pat
         )
 
     assert evaluate.call_count == 1
+
+
+def test_failed_mcp_connect_closes_owned_client(minimal_config, mock_session_store):
+    owned_client = MagicMock()
+    mcp_client = MagicMock()
+    mcp_client.connect_all.side_effect = RuntimeError("server crashed")
+
+    with (
+        patch("nova.agent.build_client", return_value=owned_client),
+        pytest.raises(RuntimeError),
+    ):
+        NovaAgent(
+            config=minimal_config,
+            session_store=mock_session_store,
+            mcp_client=mcp_client,
+        )
+
+    owned_client.close.assert_called_once()
+    mcp_client.disconnect_all.assert_called_once()
+
+
+def test_tool_callback_fires_before_execution_on_both_paths(minimal_config, mock_session_store):
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+    )
+    events: list[str] = []
+    agent._tool_callback = lambda name: events.append(f"announce:{name}")
+
+    def execute(call: dict) -> str:
+        events.append(f"run:{call['function']['name']}")
+        return "ok"
+
+    calls = [
+        {"id": "a", "function": {"name": "read_file", "arguments": "{}"}},
+        {"id": "b", "function": {"name": "write_file", "arguments": "{}"}},
+    ]
+    with patch.object(agent, "_execute_tool_call", side_effect=execute):
+        agent._execute_tool_calls_parallel(calls)
+
+    for name in ("read_file", "write_file"):
+        assert events.index(f"announce:{name}") < events.index(f"run:{name}")
+
+
+def test_parallel_tool_failure_hides_exception_message(minimal_config, mock_session_store):
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+    )
+    call = {"id": "a", "function": {"name": "read_file", "arguments": "{}"}}
+
+    with patch.object(agent, "_execute_tool_call", side_effect=RuntimeError("token=s3cret")):
+        results = agent._execute_tool_calls_parallel([call])
+
+    assert results == ["Error: Tool 'read_file' failed: RuntimeError"]
