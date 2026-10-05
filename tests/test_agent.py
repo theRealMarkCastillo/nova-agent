@@ -218,17 +218,17 @@ def test_mcp_calls_use_normal_permission_path_and_close(
             confirmation_callback=lambda _name, _args: True,
         )
     call = {"function": {"name": "mcp__server__echo", "arguments": json.dumps({"value": 1})}}
-    assert agent._execute_tool_call(call) == "mcp result"
+    assert agent.tool_executor.run(call).content == "mcp result"
     assert mcp.calls == [("server", "echo", {"value": 1})]
     assert (
-        agent._execute_tool_call(
+        agent.tool_executor.run(
             {
                 "function": {
                     "name": "mcp_read_resource",
                     "arguments": json.dumps({"server_name": "server", "uri": "file://doc"}),
                 }
             }
-        )
+        ).content
         == "resource result"
     )
     agent.close()
@@ -245,9 +245,9 @@ def test_mcp_resource_arguments_are_validated(
         session_store=mock_session_store,
         mcp_client=mcp,
     )
-    result = agent._execute_tool_call(
+    result = agent.tool_executor.run(
         {"function": {"name": "mcp_read_resource", "arguments": json.dumps({"uri": "x"})}}
-    )
+    ).content
     assert result == "Error: server_name must be a non-empty string"
 
 
@@ -272,7 +272,7 @@ def test_agent_workspace_controls_context_and_relative_tools(
             "arguments": json.dumps({"command": "pwd"}),
         }
     }
-    result = agent._execute_tool_call(terminal_call)
+    result = agent.tool_executor.run(terminal_call).content
     assert str(tmp_path) in result
 
     write_call = {
@@ -281,7 +281,7 @@ def test_agent_workspace_controls_context_and_relative_tools(
             "arguments": json.dumps({"path": "nested.txt", "content": "workspace data"}),
         }
     }
-    agent._execute_tool_call(write_call)
+    agent.tool_executor.run(write_call)
     assert (tmp_path / "nested.txt").read_text() == "workspace data"
 
 
@@ -519,7 +519,7 @@ def test_agent_execute_tool_call_invalid_json(
         },
     }
 
-    result = agent._execute_tool_call(tool_call)
+    result = agent.tool_executor.run(tool_call).content
     assert "Error" in result
     assert "Invalid JSON" in result
 
@@ -542,7 +542,7 @@ def test_agent_execute_tool_call_unknown_tool(
         },
     }
 
-    result = agent._execute_tool_call(tool_call)
+    result = agent.tool_executor.run(tool_call).content
     assert "Error" in result
 
 

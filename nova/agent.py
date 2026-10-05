@@ -6,41 +6,32 @@ deterministic context management, and session management.
 
 from __future__ import annotations
 
-import contextvars
 import copy
-import json
 import logging
 import re
 import sqlite3
-import threading
-import time
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from nova.config import ensure_nova_home, load_config, set_model
 from nova.cost_tracker import CostTracker, extract_usage_from_response
-from nova.harness import HarnessTrace, VerificationResult, derive_run_status
+from nova.harness import HarnessTrace, derive_run_status
 from nova.hooks import (
     EVENT_POST_LLM_CALL,
-    EVENT_POST_TOOL_CALL,
     EVENT_PRE_LLM_CALL,
-    EVENT_PRE_TOOL_CALL,
     EVENT_SESSION_START,
     hooks,
 )
 from nova.mcp_client import McpToolInfo, build_mcp_client
 from nova.microcompact import compact_to_token_budget
 from nova.model_metadata import get_model_context_window, load_provider_metadata
-from nova.observability import create_observability, redact
+from nova.observability import create_observability
 from nova.permissions import (
     PermissionChecker,
-    PermissionResult,
     build_permission_checker,
     has_untrusted_output,
-    is_egress_tool,
 )
 from nova.prompt import build_system_prompt
 from nova.providers import (
@@ -54,6 +45,7 @@ from nova.tokens import (
     estimate_tokens,
     estimate_total_request_tokens,
 )
+from nova.tool_executor import MCP_RESOURCE_TOOL, ToolExecutor
 from nova.tools.registry import discover_builtin_tools, registry
 from nova.wiki_memory import WikiMemory
 
@@ -74,10 +66,6 @@ _COMPACTION_NOTE = {
 # Limits how far one response's usage can move the budget, so a provider that
 # reports odd counts cannot shrink or inflate the usable window drastically.
 _TOKEN_CALIBRATION_BOUNDS = (0.8, 2.0)
-
-_TRANSIENT_TOOL_ERRORS = frozenset(
-    {ErrorType.RETRYABLE, ErrorType.CONNECTION_TIMEOUT, ErrorType.API_TIMEOUT}
-)
 
 
 class ContextBudgetError(ValueError):
@@ -166,17 +154,12 @@ class NovaAgent:
         # An injected MCP client (e.g. a parent agent's) belongs to its caller.
         self._owns_mcp_client = mcp_client is None
         self.mcp_client = mcp_client if mcp_client is not None else build_mcp_client(self.config)
-        self._mcp_call_lock = threading.RLock()
         self._mcp_tools: dict[str, McpToolInfo] = {}
-        self._mcp_resource_tool_name = "mcp_read_resource"
         self.last_run_trace: Any = None
         self._active_trace: HarnessTrace | None = None
-        # Set once output from the web, HTTP, or MCP is in the conversation; it
-        # may carry injected instructions, so outbound tools then need approval.
-        self._untrusted_content_seen = False
         # Provider tokens per locally estimated token, from the last response.
         self._token_calibration = 1.0
-        self._untrusted_output_pending = False
+        self.tool_executor = ToolExecutor(self)
 
         # Initialize components
         ensure_nova_home()
@@ -305,7 +288,7 @@ class NovaAgent:
                 limit=turn_limit * 4,  # ~4 msgs per turn (user+assistant+tool pairs)
             )
             self.messages = _normalize_message_history(self.messages)
-            self._untrusted_content_seen = any(
+            self.tool_executor.untrusted_content_seen = any(
                 has_untrusted_output(call.get("function", {}).get("name", ""))
                 for message in self.messages
                 for call in message.get("tool_calls") or []
@@ -473,387 +456,6 @@ class NovaAgent:
             reasoning_callback,
             interrupt_check=getattr(self, "_interrupt_check", None),
         )
-
-    def _wait_unless_interrupted(self, seconds: float) -> bool:
-        """Sleep up to ``seconds``; return True as soon as the user interrupts."""
-        deadline = time.monotonic() + seconds
-        while (remaining := deadline - time.monotonic()) > 0:
-            if self._interrupt_check is not None and self._interrupt_check():
-                return True
-            time.sleep(min(0.1, remaining))
-        return self._interrupt_check is not None and self._interrupt_check()
-
-    def _execute_tool_call(self, tool_call: dict) -> str:
-        function = tool_call.get("function", {})
-        name = function.get("name", "")
-        call_id = tool_call.get("id", "") or str(uuid.uuid4())
-        raw_args = function.get("arguments", "{}")
-        try:
-            parsed_args = json.loads(raw_args)
-            args = (
-                self._apply_workspace_defaults(name, parsed_args)
-                if isinstance(parsed_args, dict)
-                else {}
-            )
-        except (TypeError, json.JSONDecodeError):
-            args = {}
-        collector = self._active_trace
-        trace = collector.start_tool(call_id, name, redact(args)) if collector else None
-        denied = False
-
-        def record_policy(permission: PermissionResult, approved: bool) -> None:
-            nonlocal denied
-            denied = not permission.allowed or not approved
-            if trace is not None and collector is not None:
-                collector.policy(
-                    trace,
-                    allowed=permission.allowed,
-                    confirmation_required=permission.requires_confirmation,
-                    reason=permission.reason,
-                )
-
-        try:
-            result = self._execute_tool_call_impl(tool_call, on_policy=record_policy)
-            if not denied and has_untrusted_output(name):
-                self._untrusted_output_pending = True
-            verification = None
-            entry = registry.get_tool(name)
-            if entry is not None and entry.verifier is not None and isinstance(args, dict):
-                try:
-                    verification = entry.verifier(args, result, agent=self)
-                except Exception as exc:
-                    verification = VerificationResult("inconclusive", reason=type(exc).__name__)
-            if verification is None and isinstance(result, str) and result.startswith("Error:"):
-                verification = VerificationResult("failed", reason="tool returned an error")
-            outcome: Literal["completed", "failed", "denied"] = (
-                "denied" if denied else ("failed" if result.startswith("Error:") else "completed")
-            )
-            if trace is not None and collector is not None:
-                collector.finish_tool(
-                    trace, outcome=outcome, result=redact(result), verification=verification
-                )
-            if verification is not None:
-                self.observability.verification(
-                    name,
-                    status=verification.status,
-                    evidence=verification.evidence,
-                    reason=verification.reason,
-                )
-            return result
-        except BaseException as exc:
-            if trace is not None and collector is not None:
-                collector.finish_tool(trace, outcome="failed", result=type(exc).__name__)
-            raise
-
-    def _execute_tool_call_impl(
-        self,
-        tool_call: dict,
-        on_policy: Callable[[PermissionResult, bool], None] | None = None,
-    ) -> str:
-        """Execute a single tool call and return the result.
-
-        Automatically retries transient errors (timeout, network) but not permanent ones.
-        """
-        function = tool_call.get("function", {})
-        name = function.get("name", "")
-        arguments_str = function.get("arguments", "{}")
-
-        try:
-            arguments = json.loads(arguments_str)
-        except json.JSONDecodeError:
-            self.observability.tool(name, output_data="invalid_json")
-            return f"Error: Invalid JSON arguments: {redact(arguments_str)}"
-
-        if not isinstance(arguments, dict):
-            self.observability.tool(name, output_data="invalid_arguments")
-            return "Error: Tool arguments must be an object"
-        arguments = self._apply_workspace_defaults(name, arguments)
-
-        # Permission check
-        if self._interrupt_check is not None and self._interrupt_check():
-            return "[Interrupted by user before tool execution]"
-        entry = registry.get_tool(name)
-        mcp_tool = self._mcp_tool_info(name)
-        is_mcp_resource = name == self._mcp_resource_tool_name
-        if entry is None and mcp_tool is None and not is_mcp_resource:
-            self.observability.tool(name, input_data=arguments, output_data="unknown_tool")
-            return f"Error: Unknown tool: {name}"
-        is_read_only = entry.is_read_only if entry else is_mcp_resource
-
-        # Resolve the path-bearing argument used by this tool before policy.
-        file_path = self._permission_path(arguments)
-        command = arguments.get("command")
-
-        perm_result = self.permission_checker.evaluate(
-            name,
-            is_read_only=is_read_only,
-            file_path=file_path,
-            command=command,
-            untrusted_context=self._untrusted_content_seen,
-        )
-        if (
-            perm_result.allowed
-            and not perm_result.requires_confirmation
-            and entry is not None
-            and entry.always_confirm is not None
-        ):
-            try:
-                reason = entry.always_confirm(arguments, wiki=self.wiki)
-            except Exception:
-                logger.exception("always_confirm check failed for %s", name)
-                reason = "could not be checked for safety"
-            if reason:
-                perm_result = PermissionResult(
-                    allowed=True,
-                    requires_confirmation=True,
-                    reason=f"Tool '{name}' {reason}",
-                )
-        self.observability.policy(name, allowed=perm_result.allowed, reason=perm_result.reason)
-
-        if not perm_result.allowed:
-            if on_policy is not None:
-                on_policy(perm_result, False)
-            logger.warning("Tool call denied: %s — %s", name, perm_result.reason)
-            self.observability.tool(name, input_data=arguments, output_data="denied")
-            return f"Error: {perm_result.reason}"
-
-        approved = not perm_result.requires_confirmation or bool(
-            self._confirmation_callback and self._confirmation_callback(name, arguments)
-        )
-        if on_policy is not None:
-            on_policy(perm_result, approved)
-        if not approved:
-            logger.info("Tool '%s' denied because confirmation was not granted", name)
-            self.observability.tool(name, input_data=arguments, output_data="confirmation_denied")
-            return f"Error: Tool '{name}' requires confirmation"
-
-        if self._interrupt_check is not None and self._interrupt_check():
-            return "[Interrupted by user before tool execution]"
-
-        # Fire pre_tool_call hook (also fired in registry.dispatch, but we fire here
-        # first so the permission check happens before the hook)
-        hooks.emit(EVENT_PRE_TOOL_CALL, tool_name=name, args=arguments)
-
-        # Execute with automatic retry on transient errors
-        max_retries = max(0, self.config.get("agent", {}).get("tool_retry_max_attempts", 2))
-        result = ""
-        for attempt in range(max_retries + 1):
-            if self._interrupt_check is not None and self._interrupt_check():
-                return "[Interrupted by user before tool execution]"
-            # Pass config, wiki, and agent reference to tool handlers via kwargs
-            try:
-                if mcp_tool is not None:
-                    with self._mcp_call_lock:
-                        if self._interrupt_check is not None and self._interrupt_check():
-                            return "[Interrupted by user before tool execution]"
-                        result = self.mcp_client.call_tool(
-                            mcp_tool.server_name, mcp_tool.name, arguments
-                        )
-                elif is_mcp_resource:
-                    result = self._read_mcp_resource(arguments)
-                else:
-                    result = registry.dispatch(
-                        name,
-                        arguments,
-                        config=self.config,
-                        wiki=self.wiki,
-                        session_store=self.session_store,
-                        workspace=self.workspace,
-                        agent=self,
-                    )
-                hooks.emit(EVENT_POST_TOOL_CALL, tool_name=name, args=arguments, result=result)
-            except Exception as exc:
-                result = f"Error: Tool '{name}' failed: {type(exc).__name__}"
-                self.observability.tool(
-                    name, input_data=arguments, output_data=result, retries=attempt
-                )
-                self.observability.verification(
-                    name, status="failed", error_type=type(exc).__name__
-                )
-                return result
-
-            # Retry on transient errors (timeout, network, rate-limit)
-            is_transient = (
-                is_read_only
-                and isinstance(result, str)
-                and result.startswith("Error:")
-                and classify_error(message=result) in _TRANSIENT_TOOL_ERRORS
-                and attempt < max_retries
-            )
-            if is_transient:
-                wait_time = 2**attempt  # exponential backoff: 1s, 2s, 4s
-                logger.warning(
-                    "Tool %s failed with transient error (attempt %d/%d), retrying in %ds: %s",
-                    name,
-                    attempt + 1,
-                    max_retries + 1,
-                    wait_time,
-                    result[:100],
-                )
-                if self._wait_unless_interrupted(wait_time):
-                    return "[Interrupted by user before tool execution]"
-                continue
-
-            # Success or permanent error — return
-            self.observability.tool(name, input_data=arguments, output_data=result, retries=attempt)
-            self.observability.verification(
-                name,
-                status="failed" if result.startswith("Error:") else "inconclusive",
-                result=result,
-            )
-            return result
-
-        self.observability.tool(name, input_data=arguments, output_data=result, retries=max_retries)
-        self.observability.verification(
-            name,
-            status="failed" if result.startswith("Error:") else "inconclusive",
-            result=result,
-        )
-        return result
-
-    def _read_mcp_resource(self, arguments: dict[str, Any]) -> str:
-        server_name = arguments.get("server_name")
-        uri = arguments.get("uri")
-        if not isinstance(server_name, str) or not server_name:
-            return "Error: server_name must be a non-empty string"
-        if not isinstance(uri, str) or not uri:
-            return "Error: uri must be a non-empty string"
-        if not self.mcp_client.is_connected(server_name):
-            return f"Error: MCP server '{server_name}' is not connected."
-        with self._mcp_call_lock:
-            return self.mcp_client.read_resource(server_name, uri)
-
-    def _apply_workspace_defaults(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        arguments = dict(arguments)
-        if name == "terminal" and not arguments.get("workdir"):
-            arguments["workdir"] = str(self.workspace)
-        elif name in {"read_file", "write_file", "patch_file"}:
-            path = arguments.get("path")
-            if isinstance(path, str) and path and not Path(path).expanduser().is_absolute():
-                arguments["path"] = str(self.workspace / path)
-        elif name == "search_files":
-            path = arguments.get("path", ".")
-            if isinstance(path, str) and not Path(path).expanduser().is_absolute():
-                arguments["path"] = str(self.workspace / path)
-        elif name == "list_files":
-            root = arguments.get("root", ".")
-            if isinstance(root, str) and not Path(root).expanduser().is_absolute():
-                arguments["root"] = str(self.workspace / root)
-        elif name.startswith("git_"):
-            repo = arguments.get("repo", ".")
-            if isinstance(repo, str) and not Path(repo).expanduser().is_absolute():
-                arguments["repo"] = str(self.workspace / repo)
-        return arguments
-
-    @staticmethod
-    def _permission_path(arguments: dict[str, Any]) -> str | None:
-        """Return the path-like argument that must go through policy checks."""
-        for key in ("path", "file_path", "root", "repo", "workdir"):
-            value = arguments.get(key)
-            if isinstance(value, str) and value:
-                return value
-        return None
-
-    def _execute_tool_calls_parallel(
-        self,
-        tool_calls: list[dict],
-    ) -> list[str]:
-        """Execute tool calls, parallelizing independent ones.
-
-        Tool calls are considered independent if they don't share data
-        dependencies (i.e., none reads a file another writes). For safety,
-        we parallelize only read-only tool calls; write/mutate tools run
-        sequentially after the parallel batch.
-        """
-        read_only_calls: list[tuple[int, dict]] = []
-        write_calls: list[tuple[int, dict]] = []
-
-        for idx, tc in enumerate(tool_calls):
-            fn_name = tc.get("function", {}).get("name", "")
-            entry = registry.get_tool(fn_name)
-            # Calls that may prompt for confirmation must run on this thread.
-            gated_egress = self._untrusted_content_seen and is_egress_tool(fn_name)
-            if (
-                (entry is not None and entry.is_read_only)
-                or fn_name == self._mcp_resource_tool_name
-            ) and not gated_egress:
-                read_only_calls.append((idx, tc))
-            else:
-                write_calls.append((idx, tc))
-
-        results: list[str | None] = [None] * len(tool_calls)
-
-        for tc in tool_calls:
-            self._report_tool_start(tc)
-
-        # Execute read-only tools in parallel
-        if read_only_calls:
-            max_workers = min(len(read_only_calls), 4)
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_idx = {}
-                for idx, tc in read_only_calls:
-                    self._announce_tool(tc)
-                    context = contextvars.copy_context()
-                    future_to_idx[executor.submit(context.run, self._execute_tool_call, tc)] = idx
-
-                for future in as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    try:
-                        results[idx] = future.result()
-                    except Exception as exc:
-                        fn_name = tool_calls[idx].get("function", {}).get("name", "")
-                        logger.exception("Parallel tool call '%s' failed", fn_name)
-                        results[idx] = f"Error: Tool '{fn_name}' failed: {type(exc).__name__}"
-
-                    self._report_tool_result(tool_calls[idx], results[idx] or "")
-
-        # Execute write/mutate tools sequentially
-        for idx, tc in write_calls:
-            interrupt_check = getattr(self, "_interrupt_check", None)
-            if interrupt_check is not None and interrupt_check():
-                interrupted_result = "[Interrupted by user before tool execution]"
-                results[idx] = interrupted_result
-                self._report_tool_result(tc, interrupted_result)
-                continue
-            self._announce_tool(tc)
-            try:
-                results[idx] = self._execute_tool_call(tc)
-            except Exception as exc:
-                fn_name = tc.get("function", {}).get("name", "")
-                logger.exception("Sequential tool call '%s' failed", fn_name)
-                results[idx] = f"Error: Tool '{fn_name}' failed: {type(exc).__name__}"
-            self._report_tool_result(tc, results[idx] or "")
-
-        # The model sees this batch's output only in its next response, so the
-        # stricter policy starts with the next batch.
-        if self._untrusted_output_pending:
-            self._untrusted_content_seen = True
-            self._untrusted_output_pending = False
-
-        return [r if r is not None else "Error: Unexpected None result" for r in results]
-
-    def _announce_tool(self, tool_call: dict) -> None:
-        tool_cb = getattr(self, "_tool_callback", None)
-        name = tool_call.get("function", {}).get("name", "")
-        if tool_cb and name:
-            tool_cb(name)
-
-    def _report_tool_start(self, tool_call: dict) -> None:
-        call_id = tool_call.get("id", "")
-        name = tool_call.get("function", {}).get("name", "")
-        if call_id and name and self._tool_lifecycle_callback:
-            self._tool_lifecycle_callback(call_id, name, "start", None)
-
-    def _report_tool_result(self, tool_call: dict, result: str) -> None:
-        call_id = tool_call.get("id", "")
-        name = tool_call.get("function", {}).get("name", "")
-        if call_id and name and self._tool_lifecycle_callback:
-            status = (
-                "failed"
-                if result.startswith("Error:") or result.startswith("[Interrupted")
-                else "completed"
-            )
-            self._tool_lifecycle_callback(call_id, name, status, result)
 
     @staticmethod
     def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
@@ -1115,65 +717,30 @@ class NovaAgent:
             # Check for interrupt between iterations (Ctrl+C)
             if _interrupt_check is not None and _interrupt_check():
                 logger.info("Agent interrupted by user")
-                for tool_call in tool_calls:
-                    call_id = tool_call.get("id", "")
-                    if not call_id:
-                        continue
-                    self._report_tool_start(tool_call)
-                    if self._active_trace is not None:
-                        interrupted_trace = self._active_trace.start_tool(
-                            call_id,
-                            tool_call.get("function", {}).get("name", ""),
-                            redact(tool_call.get("function", {})),
-                        )
-                        self._active_trace.finish_tool(
-                            interrupted_trace,
-                            outcome="failed",
-                            result="[Interrupted by user before tool execution]",
-                            verification=VerificationResult("inconclusive", reason="interrupted"),
-                        )
-                    interrupted_result = {
-                        "role": "tool",
-                        "content": "[Interrupted by user before tool execution]",
-                        "tool_call_id": call_id,
-                    }
-                    self.messages.append(interrupted_result)
-                    self._persist_message(
-                        self.session_id or "",
-                        "tool",
-                        interrupted_result["content"],
-                        tool_call_id=call_id,
-                    )
-                    self._report_tool_result(tool_call, interrupted_result["content"])
+                answerable = [call for call in tool_calls if call.get("id")]
+                skipped = self.tool_executor.skip_batch(answerable)
+                for tool_call, result in zip(answerable, skipped, strict=True):
+                    self._append_tool_result(tool_call["id"], result.content)
                 return "[Interrupted]"
 
             # Execute tool calls — parallelize independent calls
             tool_result_max_tokens = self.config["budgets"].get("tool_result_max_tokens", 3000)
-            results = self._execute_tool_calls_parallel(tool_calls)
+            results = self.tool_executor.run_batch(tool_calls)
 
             for tool_call, result in zip(tool_calls, results, strict=True):
-                call_id = tool_call.get("id", "")
-
+                content = result.content
                 # Enforce per-result token budget
-                result_tokens = estimate_tokens(result)
-                if result_tokens > tool_result_max_tokens:
-                    result = self._truncate_to_token_budget(result, tool_result_max_tokens)
-
-                tool_result_msg = {
-                    "role": "tool",
-                    "content": result,
-                    "tool_call_id": call_id,
-                }
-                self.messages.append(tool_result_msg)
-                self._persist_message(
-                    self.session_id or "",
-                    "tool",
-                    result,
-                    tool_call_id=call_id,
-                )
-                api_messages.append(tool_result_msg)
+                if estimate_tokens(content) > tool_result_max_tokens:
+                    content = self._truncate_to_token_budget(content, tool_result_max_tokens)
+                api_messages.append(self._append_tool_result(tool_call.get("id", ""), content))
 
         return f"[Max iterations ({max_iterations}) reached]"
+
+    def _append_tool_result(self, call_id: str, content: str) -> dict[str, Any]:
+        message = {"role": "tool", "content": content, "tool_call_id": call_id}
+        self.messages.append(message)
+        self._persist_message(self.session_id or "", "tool", content, tool_call_id=call_id)
+        return message
 
     def _persist_message(self, session_id: str, role: str, content: str, **kwargs: Any) -> None:
         """Persist a message without making a transient DB outage kill the turn."""
@@ -1227,7 +794,7 @@ class NovaAgent:
                 {
                     "type": "function",
                     "function": {
-                        "name": self._mcp_resource_tool_name,
+                        "name": MCP_RESOURCE_TOOL,
                         "description": "Read an MCP resource by server name and URI.",
                         "parameters": {
                             "type": "object",

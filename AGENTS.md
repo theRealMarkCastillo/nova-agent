@@ -15,7 +15,8 @@ Nova Agent is a lightweight personal AI agent with explicit token budgets and sm
 
 **Main package:** `nova/`
 
-- `agent.py` — Main agent loop with OpenRouter API, streaming, tool calling, history truncation
+- `agent.py` — Main agent loop with OpenRouter API, streaming, history compaction
+- `tool_executor.py` — Tool call pipeline: policy, confirmation, dispatch, retry, verification, tracing; returns typed `ToolResult`s
 - `cli.py` — CLI entry point (chat, ask, sessions, reset commands)
 - `config.py` — YAML config loading with env var resolution, deep merge
 - `context.py` — Context file discovery with budgets, head/tail truncation, injection scanning
@@ -27,6 +28,7 @@ Nova Agent is a lightweight personal AI agent with explicit token budgets and sm
 - `tokens.py` — Token estimation via tiktoken with character fallback
 - `tools/` — Tool registry and built-in tools
   - `registry.py` — Central tool registry with auto-discovery
+  - `result.py` — `ToolResult`, the typed outcome of a tool call
   - `terminal.py` — Shell command execution with timeout and output truncation
   - `file_ops.py` — read_file, write_file, patch_file tools
   - `search_files.py` — Grep/regex search across project files

@@ -162,7 +162,9 @@ def _my_tool(args: dict, **kwargs) -> str:
 
 ## Return Values
 
-**Handlers must return a string.** The string is injected into the conversation as a tool result message. The model reads it and decides what to do next.
+**Handlers return a string** (or a `ToolResult`, below). The string is injected into the conversation as a tool result message. The model reads it and decides what to do next.
+
+A string starting with `Error:` marks the call as failed. Failures whose text looks transient (timeouts, connection resets, rate limits) are retried automatically for read-only tools.
 
 ```python
 # ✅ Good — plain text
@@ -180,6 +182,18 @@ return "Error: File not found at /path/to/file."
 return None
 return {"status": "ok"}  # dict, not string
 ```
+
+### Typed results
+
+When the `Error:` convention is not precise enough, return a `ToolResult`. The agent uses its `status` and `retryable` flag directly, and the model sees `content`:
+
+```python
+from nova.tools.result import ToolResult
+
+return ToolResult("failed", "Upstream busy; returned 40 of 100 rows.", retryable=True)
+```
+
+Every call ends as a `ToolResult` inside the agent (`nova/tool_executor.py`), with status `completed`, `failed`, `denied`, or `interrupted`. Traces, observability, and UI callbacks use that status rather than the text.
 
 ### Budget enforcement
 
@@ -484,18 +498,21 @@ registry.register(
     name="my_tool",  # Tool name — must match schema["name"]
     toolset="custom",  # Logical group (used for filtering)
     schema=MY_TOOL_SCHEMA,  # Full JSON schema dict
-    handler=_my_tool,  # Callable: (args: dict, **kwargs) -> str
-    check_fn=None,  # Optional: () -> bool — return False to skip registration
+    handler=_my_tool,  # Callable: (args: dict, **kwargs) -> str | ToolResult
+    check_fn=None,  # Optional: (config) -> bool — return False to hide the tool
     emoji="🔧",  # Displayed in tool call output
+    is_read_only=False,  # True: no confirmation needed, may run in parallel
+    verifier=None,  # Optional: (args, result, agent=...) -> VerificationResult
+    always_confirm=None,  # Optional: (args, wiki=...) -> reason | None
 )
 ```
 
 ### `check_fn` — conditional registration
 
-Use `check_fn` to skip registration when requirements aren't met (e.g. missing API key):
+Use `check_fn` to hide a tool from the model when requirements aren't met (e.g. missing API key). `get_definitions()` calls it with the agent's config on every request:
 
 ```python
-def _check() -> bool:
+def _check(config: dict) -> bool:
     return bool(os.environ.get("MY_API_KEY"))
 
 registry.register(
@@ -505,7 +522,6 @@ registry.register(
 )
 ```
 
-> **Note:** `check_fn` is stored but not currently called automatically by `get_definitions()`. It is available for future use and for your own gating logic.
 
 ---
 

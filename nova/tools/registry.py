@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from nova.observability import redact
+from nova.tools.result import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ class ToolRegistry:
 
         try:
             result = entry.handler(args, **kwargs)
-            if isinstance(result, str):
+            if isinstance(result, (str, ToolResult)):
                 return result
             return str(result)
         except Exception as e:
