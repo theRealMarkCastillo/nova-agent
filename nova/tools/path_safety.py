@@ -24,6 +24,21 @@ _PROTECTED_DIRS = {
 }
 
 
+def is_sensitive_path(resolved: Path) -> bool:
+    """Whether a resolved path is inside a credential store or secrets file.
+
+    Shared by the file tools and the permission checker so both layers
+    protect the same paths.
+    """
+    parts = resolved.parts
+    for index, part in enumerate(parts):
+        if part in _PROTECTED_DIRS or part in _PROTECTED_FILES or part.startswith(".env"):
+            return True
+        if part == ".config" and parts[index + 1 : index + 2] == ("gcloud",):
+            return True
+    return False
+
+
 def _configured_workspace(kwargs: dict[str, Any]) -> Path | None:
     workspace = kwargs.get("workspace")
     config = kwargs.get("config")
@@ -53,12 +68,8 @@ def path_safety_error(path: Path, **kwargs: Any) -> str | None:
     ):
         return f"Error: Access denied to protected path: {path}"
 
-    parts = resolved.parts
-    for index, part in enumerate(parts):
-        if part in _PROTECTED_DIRS or part in _PROTECTED_FILES or part.startswith(".env"):
-            return f"Error: Access denied to sensitive path: {path}"
-        if part == ".config" and index + 1 < len(parts) and parts[index + 1] == "gcloud":
-            return f"Error: Access denied to sensitive path: {path}"
+    if is_sensitive_path(resolved):
+        return f"Error: Access denied to sensitive path: {path}"
 
     configured = _configured_workspace(kwargs)
     workspaces = [configured] if configured else []

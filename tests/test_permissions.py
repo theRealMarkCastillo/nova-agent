@@ -2,12 +2,15 @@
 
 from pathlib import Path
 
+import pytest
+
 from nova.permissions import (
     PermissionChecker,
     PermissionMode,
     PermissionSettings,
     build_permission_checker,
 )
+from nova.tools.path_safety import path_safety_error
 
 # ── PermissionMode Tests ────────────────────────────────────────────────────
 
@@ -345,3 +348,22 @@ def test_path_deny_rule_still_applies_to_command_workdir(tmp_path: Path):
     )
     result = checker.evaluate("terminal", file_path=str(tmp_path), command="ls")
     assert result.allowed is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/user/.aws/sso/cache/token.json",
+        "/home/user/.docker/contexts/meta.json",
+        "/home/user/.kube/cache/discovery.json",
+        "/home/user/project/.terraform/terraform.tfstate",
+        "/home/user/.nova/sessions/sessions.db",
+        "/home/user/project/.envrc",
+        "/home/user/.config/gcloud/credentials.db",
+    ],
+)
+def test_sensitive_paths_match_file_tool_protection(path):
+    checker = PermissionChecker(PermissionSettings(mode=PermissionMode.AUTO))
+
+    assert path_safety_error(Path(path)) is not None
+    assert checker.evaluate("mcp__fs__read", file_path=path).allowed is False

@@ -16,6 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from nova.tools.path_safety import is_sensitive_path
 from nova.tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -36,27 +37,6 @@ class PermissionResult:
     requires_confirmation: bool = False
     reason: str = ""
 
-
-# Built-in sensitive paths that can NEVER be overridden
-_SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
-    "*/.ssh/*",
-    "*/.ssh",
-    "*/.aws/credentials",
-    "*/.aws/config",
-    "*/.config/gcloud/*",
-    "*/.azure/*",
-    "*/.gnupg/*",
-    "*/.docker/config.json",
-    "*/.kube/config",
-    "*/.nova/credentials.json",
-    "*/.nova/config.yaml",
-    "*/.netrc",
-    "*/.git-credentials",
-    "*/.env",
-    "*/.env.*",
-    "*/.env.*/*",
-    "*/.npmrc",
-)
 
 # Commands that are always denied (fnmatch patterns)
 _DEFAULT_DENIED_COMMANDS: tuple[str, ...] = (
@@ -177,13 +157,7 @@ class PermissionChecker:
         )
 
     def _matches_sensitive_path(self, path: str) -> bool:
-        """Check if a path matches any built-in sensitive pattern."""
-        path = self._normalize_path(path)
-        # Check both the path and path with trailing slash for directory matches
-        for pattern in _SENSITIVE_PATH_PATTERNS:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path + "/", pattern):
-                return True
-        return False
+        return is_sensitive_path(Path(self._normalize_path(path)))
 
     def _check_path_rules(self, path: str) -> PermissionResult | None:
         """Check path against user-defined path rules. Returns None if no match."""
