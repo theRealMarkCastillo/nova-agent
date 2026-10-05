@@ -185,9 +185,9 @@ class TestReadFile:
             # Should be truncated
             assert "truncated" not in result or "99" in result
 
-    def test_read_file_not_found(self):
+    def test_read_file_not_found(self, tmp_path):
         """Error when file doesn't exist."""
-        result = _read_file({"path": "/nonexistent/path/file.txt"})
+        result = _read_file({"path": str(tmp_path / "missing.txt")}, workspace=tmp_path)
         assert "not found" in result.lower()
 
     def test_read_file_no_path(self):
@@ -396,10 +396,11 @@ class TestPatchFile:
             )
             assert "not found" in result.lower()
 
-    def test_patch_file_not_found(self):
+    def test_patch_file_not_found(self, tmp_path):
         """Error when file doesn't exist."""
         result = _patch_file(
-            {"path": "/nonexistent/file.txt", "old_string": "old", "new_string": "new"}
+            {"path": str(tmp_path / "missing.txt"), "old_string": "old", "new_string": "new"},
+            workspace=tmp_path,
         )
         assert "not found" in result.lower()
 
@@ -522,3 +523,27 @@ class TestAtomicWritePreservation:
 
         assert link.is_symlink()
         assert target.read_text() == "newer"
+
+
+class TestExistenceOutsideWorkspace:
+    def test_read_missing_file_outside_workspace_is_denied(self, tmp_path):
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        outside = tmp_path / "elsewhere" / "missing.txt"
+
+        result = _read_file({"path": str(outside)}, workspace=workspace)
+
+        assert "denied" in result.lower()
+        assert "not found" not in result.lower()
+
+    def test_patch_missing_file_outside_workspace_is_denied(self, tmp_path):
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        outside = tmp_path / "elsewhere" / "missing.txt"
+
+        result = _patch_file(
+            {"path": str(outside), "old_string": "a", "new_string": "b"}, workspace=workspace
+        )
+
+        assert "denied" in result.lower()
+        assert "not found" not in result.lower()

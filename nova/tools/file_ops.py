@@ -188,12 +188,12 @@ def _read_file(args: dict[str, Any], **kwargs: Any) -> str:
     if _is_obviously_blocked(path):
         return f"Error: Access denied to protected path: {path}"
 
-    if not path.exists():
-        return f"Error: File not found: {path}"
-
-    # Security check
+    # Check safety before existence so outside paths do not reveal whether they exist.
     if error := _is_path_safe(path, **kwargs):
         return error
+
+    if not path.exists():
+        return f"Error: File not found: {path}"
 
     offset = args.get("offset", 1)
     limit = args.get("limit", 500)
@@ -290,12 +290,11 @@ def _patch_file(args: dict[str, Any], **kwargs: Any) -> str:
     if len(new_string) > _MAX_PATCH_CHARS:
         return f"Error: Replacement text too large (max {_MAX_PATCH_CHARS:,} chars)."
 
-    if not path.exists():
-        return f"Error: File not found: {path}"
-
-    # Security check
     if error := _is_path_safe(path, **kwargs):
         return error
+
+    if not path.exists():
+        return f"Error: File not found: {path}"
 
     try:
         content = path.read_text(encoding="utf-8")

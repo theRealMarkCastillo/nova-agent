@@ -101,9 +101,9 @@ def test_read_file_with_range():
     assert "line 4" not in result
 
 
-def test_read_file_nonexistent():
+def test_read_file_nonexistent(tmp_path):
     """Test reading a nonexistent file."""
-    result = _read_file({"path": "/nonexistent/file.txt"})
+    result = _read_file({"path": str(tmp_path / "missing.txt")}, workspace=tmp_path)
     assert "Error" in result
     assert "not found" in result
 
