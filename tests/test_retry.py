@@ -4,6 +4,7 @@ import contextlib
 from unittest.mock import MagicMock, patch
 
 import httpx
+import openai
 import pytest
 
 from nova.retry import (
@@ -340,3 +341,28 @@ def test_retry_api_call_with_retries():
     )
     assert result.json() == {"status": "ok"}
     assert call_count[0] == 3
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_calls"),
+    [
+        (openai.APIConnectionError(request=httpx.Request("POST", "https://x")), 3),
+        (httpx.ConnectError("boom"), 3),
+        (ConnectionResetError(), 3),
+        # Timeouts may indicate a permanently stuck endpoint: retried once only.
+        (openai.APITimeoutError(request=httpx.Request("POST", "https://x")), 2),
+        (httpx.ReadTimeout("slow"), 2),
+    ],
+)
+def test_retry_transport_errors_by_type(error, expected_calls):
+    call_count = 0
+
+    def flaky():
+        nonlocal call_count
+        call_count += 1
+        raise error
+
+    with patch("nova.retry.time.sleep"), pytest.raises(type(error)):
+        retry_with_backoff(flaky, max_retries=2, base_delay=0.01)
+
+    assert call_count == expected_calls

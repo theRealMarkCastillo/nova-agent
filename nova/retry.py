@@ -11,6 +11,9 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import httpx
+import openai
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,6 +120,25 @@ def classify_error(status_code: int | None = None, message: str = "") -> str:
     return ErrorType.NON_RETRYABLE
 
 
+def classify_exception(error: Exception) -> str:
+    """Classify a raised exception, trusting its type before its message.
+
+    SDK transport errors carry generic messages (openai's is just
+    "Connection error.") that text patterns cannot recognize.
+    """
+    if isinstance(error, (openai.APITimeoutError, httpx.TimeoutException, TimeoutError)):
+        return ErrorType.API_TIMEOUT
+    if isinstance(error, (openai.APIConnectionError, httpx.TransportError, ConnectionError)):
+        return ErrorType.CONNECTION_TIMEOUT
+    # httpx.HTTPStatusError stores status_code on .response
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        response = getattr(error, "response", None)
+        if response is not None:
+            status_code = getattr(response, "status_code", None)
+    return classify_error(status_code, str(error))
+
+
 def retry_with_backoff(
     func,
     *args: Any,
@@ -157,13 +179,7 @@ def retry_with_backoff(
             if retry_if is not None and not retry_if(e):
                 raise
             error_msg = str(e)
-            # httpx.HTTPStatusError stores status_code on .response
-            status_code = getattr(e, "status_code", None)
-            if status_code is None:
-                response = getattr(e, "response", None)
-                if response is not None:
-                    status_code = getattr(response, "status_code", None)
-            error_type = classify_error(status_code, error_msg)
+            error_type = classify_exception(e)
 
             # Don't retry context overflow errors
             if error_type == ErrorType.CONTEXT_OVERFLOW:

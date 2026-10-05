@@ -1,7 +1,7 @@
 # GUIDE-014: Retry & Error Handling
 
 **Status:** ✅ Active  
-**Last Updated:** August 2026  
+**Last Updated:** October 2026  
 **Type:** GUIDE (Developer Reference)
 
 > Nova Agent handles API failures gracefully with configurable retry logic, exponential backoff, and intelligent error classification. This guide explains how retries work and how to tune them.
@@ -32,8 +32,8 @@ Nova classifies every error into one of five categories, each with different ret
 | **Retryable** | Retry with exponential backoff | 429 rate limit, 500/502/503/504 server errors |
 | **Non-retryable** | Fail immediately | 400 bad request, 401 unauthorized, 403 forbidden |
 | **Context overflow** | Compact the request, then retry once | Context window exceeded |
-| **API timeout** | Retry once only | "timeout", "temporary failure" |
-| **Connection timeout** | Retry with backoff | "connection refused", "connection reset" |
+| **API timeout** | Retry once only | `openai.APITimeoutError`, `httpx.TimeoutException`, "timeout" |
+| **Connection timeout** | Retry with backoff | `openai.APIConnectionError`, `httpx.TransportError`, "connection refused" |
 
 ### HTTP Status Codes
 
@@ -49,9 +49,18 @@ Nova classifies every error into one of five categories, each with different ret
 | 504 | Retryable | Backoff + retry |
 | 529 | Retryable | Backoff + retry |
 
+### Exception Types
+
+`classify_exception` checks the exception type before its message. Transport
+errors from the OpenAI SDK and httpx carry generic messages (the SDK's is just
+`"Connection error."`), so they are recognized by class: timeouts
+(`openai.APITimeoutError`, `httpx.TimeoutException`, `TimeoutError`) retry once,
+and connection failures (`openai.APIConnectionError`, `httpx.TransportError`,
+`ConnectionError`) retry with backoff.
+
 ### Error Message Patterns
 
-String matching catches errors that don't have HTTP status codes (e.g., SDK-level errors):
+For other exceptions, string matching catches errors that don't have HTTP status codes:
 
 ```python
 # Retryable patterns
