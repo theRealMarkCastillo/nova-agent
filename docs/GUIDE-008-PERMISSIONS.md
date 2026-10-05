@@ -28,11 +28,13 @@ In `ask` mode, mutating tool calls prompt for interactive confirmation (`Allow? 
 
 Every tool call is evaluated through these checks, in order:
 
-1. **Built-in sensitive path protection** — Cannot be overridden. Blocks access to:
-   - `~/.ssh/*`, `~/.aws/credentials`, `~/.aws/config`
-   - `~/.config/gcloud/*`, `~/.azure/*`, `~/.gnupg/*`
-   - `~/.docker/config.json`, `~/.kube/config`
-   - `~/.nova/credentials.json`
+1. **Built-in sensitive path protection**: configuration cannot turn this off. It blocks any path argument
+   inside or naming:
+   - the directories `.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`, `.docker`, `.terraform`, `.nova`, or `.config/gcloud`
+   - the files `.netrc`, `.git-credentials`, `.npmrc`, or anything starting with `.env` (`.env`, `.env.local`, `.envrc`)
+
+   The file tools enforce the same list, from one shared definition (`nova/tools/path_safety.py`).
+   It applies to path arguments only: see [What This Does Not Guarantee](#what-this-does-not-guarantee).
 
 2. **Explicit tool deny list** — Tools the agent can never use:
    ```yaml
@@ -73,12 +75,35 @@ Every tool call is evaluated through these checks, in order:
 
 6. **Permission mode** — Final check based on `auto` vs `ask` mode
 
+## What This Does Not Guarantee
+
+The real boundary is **confirmation in `ask` mode** plus the **workspace
+restriction** on file tools. The pattern-based checks above (sensitive paths,
+command deny patterns, prompt-injection scanning) are guardrails. They catch
+mistakes and obvious attacks, but they are not a sandbox:
+
+- `terminal` runs arbitrary shell commands as your user. `cat ~/.ssh/id_rsa` or
+  `python -c ...` reads anything you can read; sensitive path protection only
+  inspects path arguments, not command text.
+- Command deny patterns match text, so `rm -fr /` or `/bin/rm -rf /` are not
+  matched by `rm -rf /`.
+- Read-only tools, including `read_file` and `http_get`, run without
+  confirmation even when earlier tool output came from an untrusted source.
+
+In `ask` mode you see every mutating call before it runs. In `auto` mode nothing
+stops a command the model decides to run, so when using `auto` with untrusted
+input (web pages, unfamiliar repositories, third-party MCP servers), run Nova
+somewhere that limits the damage: a container or VM with only the project
+mounted, or a dedicated OS user without access to your credentials.
+
 ## Read-Only vs Mutating Tools
 
-Tools are classified as read-only or mutating:
+Each tool declares this at registration (`is_read_only`); tools that do not are mutating. MCP tools are always mutating.
 
 **Read-only** (never need confirmation):
-- `read_file`, `search_files`, `list_files`, `search_sessions`
+- `read_file`, `search_files`, `list_files`
+- `search_sessions`, `search_messages`, `read_session`
+- `git_status`, `git_log`, `git_diff`, `git_blame`, `git_show`
 - `web_search`, `web_scrape`, `web_map`, `web_dev_search`, `web_usage`
 - `http_get`
 - `skills_list`, `skill_view`, `skill_export`
@@ -104,7 +129,7 @@ permissions:
     - "wget *"
 ```
 
-File operation tools (`read_file`, `write_file`, `patch_file`) check sensitive paths and path rules.
+File operation tools (`read_file`, `write_file`, `patch_file`, `search_files`, `list_files`) and the git tools also check sensitive paths and the workspace boundary themselves.
 
 ## Configuration Reference
 
@@ -169,7 +194,7 @@ permissions:
       allow: false
 ```
 
-Read-only tools run freely. Anything that writes, executes, or modifies requires confirmation. Network commands blocked.
+Read-only tools run freely. Anything that writes, executes, or modifies requires confirmation. Common download commands are denied as a guardrail; other commands can still reach the network, so review each confirmation.
 
 ### Read-only audit — no writes at all
 
@@ -185,9 +210,15 @@ permissions:
     - "delegate_task"
     - "task_create"
     - "task_stop"
+    - "http_post"
+    - "http_put"
+    - "http_delete"
+    - "web_crawl"
+    - "web_extract"
+    - "web_parse"
 ```
 
-Nova can read, search, and answer questions but cannot modify anything. Useful for code review sessions, audits, or onboarding.
+Nova can read, search, and answer questions but cannot use the built-in tools that modify anything. MCP tools are not covered by this list. Deny them by name or leave MCP servers unconfigured. Useful for code review sessions, audits, or onboarding.
 
 ---
 
