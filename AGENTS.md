@@ -217,12 +217,22 @@ You are collaborating with other AI agents (Codex CLI, Antigravity CLI, Hermes C
    - Run the specified verification command to confirm state before modifying code.
    - Do NOT re-plan from scratch unless the documented hypothesis is disproven.
 
-2. **SESSION END / HANDOFF:**
+2. **GIT & WORKTREE DISCIPLINE:**
+   - **No Dirty Trees Across Sessions:** Never yield with uncommitted changes or unstaged edits. Before yielding, run:
+     `git add -A && git commit -m "wip: handoff to next agent"`
+     (Incoming agents may run `git reset --soft HEAD~1` if continuing uncommitted changes).
+   - **Worktree Isolation:** If creating a Git worktree, place it under `.worktrees/<branch-name>`.
+   - **Avoid Branch Collisions:** Before checking out or creating branches, run `git worktree list` to ensure the branch is not already locked by another worktree.
+   - **Pruning:** Run `git worktree prune` when cleaning up stale or removed worktrees.
+   - **Tool State Isolation:** Do NOT commit or alter other agents' session directories (`.codex/`, `.opencode/`, `.antigravity/`, `.hermes/`, `*.session.json`).
+
+3. **SESSION END / HANDOFF:**
    - Before completing your run or yielding back to the user:
      a. Run your test/lint command to know exact pass/fail state.
-     b. Update `HANDOFF.md` with:
+     b. Commit all modified files with a descriptive or WIP message.
+     c. Update `HANDOFF.md` with:
         - Exact files you touched
         - Current test state (what passes, what fails)
         - The exact command or file the next agent should touch first
-     c. Set `Current Status` to `IN_PROGRESS`, `BLOCKED`, or `COMPLETE`.
+     d. Set `Current Status` to `IN_PROGRESS`, `BLOCKED`, or `COMPLETE`.
    - If the task is 100% complete and all tests pass, set `Current Status: COMPLETE` and clear Section 3.
