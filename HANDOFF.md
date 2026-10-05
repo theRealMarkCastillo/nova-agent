@@ -5,12 +5,12 @@
 **Type:** REPORT (Session Handoff)
 
 - **Workstream:** Code/design review fixes ([SPEC-005](docs/SPEC-005-REVIEW_IMPROVEMENT_PLAN.md))
-- **Active Branch:** `main`. 21 commits on top of `863bc26`, all local and **not pushed**.
+- **Active Branch:** `main`. Commits through `8be347c` are pushed; M6 (`14e13c1`) and this handoff update are local only.
 - **Current Status:** IN_PROGRESS
 
 ## 1. Ground Truth & State
 
-SPEC-005 phases 0, 1, and 2 are implemented, along with M5 and M3b from phase 3. Each fix landed as its own commit with regression tests. Most of those tests were confirmed to fail before the fix. See `git log --oneline 863bc26..HEAD` and the per-item status in SPEC-005.
+SPEC-005 phases 0, 1, and 2 are implemented, along with M5 and M3b from phase 3 and M6 from phase 4. Each fix landed as its own commit with regression tests. Most of those tests were confirmed to fail before the fix. See `git log --oneline 863bc26..HEAD` and the per-item status in SPEC-005.
 
 Main behavior changes users may notice:
 - `ask` mode: once `http_*`, `web_*`, or MCP output is in the session, later `http_*`/`web_*` calls prompt for confirmation (H1).
@@ -18,11 +18,12 @@ Main behavior changes users may notice:
 - The permission checker now protects the same broader sensitive-path set as the file tools, e.g. `~/.aws/*` and `.envrc` (S1).
 - A flagged `Core/` or pinned wiki note, or a flagged skill description, is replaced in the prompt by a placeholder (M8).
 - `NovaAgent.close()` no longer disconnects an injected `mcp_client`, and sub-agents share the parent's (M3b).
+- The context budget is scaled by the provider's reported prompt tokens, so compaction may start earlier on models whose tokenizer counts more than cl100k (M6).
 
 Validation at HEAD:
 - `.venv/bin/ruff check .` and `.venv/bin/ruff format --check .`: passed.
 - `.venv/bin/mypy nova/`: passed, 43 source files.
-- `.venv/bin/pytest -q`: 1356 passed, 85.39% coverage (baseline 1302, 84.68%).
+- `.venv/bin/pytest -q`: 1364 passed (baseline 1302).
 - Each test file also passes when run on its own.
 - No paid provider calls, network access, or real MCP servers were used; all are mocked.
 
@@ -34,13 +35,12 @@ Remaining items need maintainer input before starting:
 - **M8 auto-mode decision:** should writes to `Core/` or `inject: true` notes require confirmation even in `auto` mode?
 - **M4** changes the session database schema (`session_fts` aggregation replaced by `message_search`) and needs a migration of existing user databases.
 - **M7** (ToolExecutor plus typed `ToolResult`) is a broad refactor of `nova/agent.py`, best done before freezing SPEC-003's public API.
-- **M6** (token accounting anchored on provider-reported usage) is self-contained.
 
 ## 3. Immediate Next Action (Start Here)
 
-1. Run `.venv/bin/pytest -q` to confirm 1356 passing.
-2. Push only when the maintainer authorizes it.
-3. If the maintainer approves continuing, start with M6: `nova/agent.py` `_compact_if_needed` and `nova/microcompact.py` `compact_to_token_budget`, following SPEC-005 Phase 4.
+1. Run `.venv/bin/pytest -q` to confirm 1364 passing.
+2. Push the local commits only when the maintainer authorizes it.
+3. Next items await maintainer decisions (Section 2): M7, M4, and the M8 auto-mode question.
 
 ## Related Documentation
 

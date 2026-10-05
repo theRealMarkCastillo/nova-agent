@@ -31,7 +31,7 @@ without re-running the review.
 | 1 | Correctness quick wins | M2, M3a, M7a, L1–L8 | ✅ Done (`47ee7eb`…`3894d5b`) |
 | 2 | Safety model | H1, M8, S1–S3 | 🟡 Done except the M8 auto-mode confirmation decision |
 | 3 | Architecture | M5, M7, M3b | 🟡 M5 and M3b done; M7 planned |
-| 4 | Performance | M6, M4 | 📋 Planned |
+| 4 | Performance | M6, M4 | 🟡 M6 done; M4 planned |
 
 Phases 1 and 4 have no dependencies on each other. Phase 3 should land before
 the public SDK surface in [SPEC-003](SPEC-003-NOVA_SDK_PUBLIC_API.md) is
@@ -146,6 +146,13 @@ prompt the user.
 ## Phase 4: Performance
 
 ### M6: Token accounting anchored on provider usage
+
+✅ Done (`14e13c1`). The design differs slightly from the plan below:
+
+- Calibration scales the budget by the ratio of the last response's `prompt_tokens` to the local estimate of that request, bounded to 0.8–2.0. The plan was to add estimated deltas on top of the reported count. Compaction rewrites history, so knowing which messages are new is unreliable, while a ratio needs no such bookkeeping.
+- Per-string counts are cached with an LRU, not keyed by message identity.
+- Compaction keeps a running total.
+- Benchmark: re-estimating 400 messages plus the built-in tool schemas over 30 iterations went from 1.69s to 0.11s.
 
 Each loop iteration currently re-tokenizes the full request, including tool
 schemas, with `cl100k`. `compact_to_token_budget` re-estimates the whole list
