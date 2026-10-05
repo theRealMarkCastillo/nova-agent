@@ -188,8 +188,13 @@ def build_system_prompt(
     mode: str = "full",
     wiki_content: str | None = None,
     extra_tool_summary: str = "",
+    tool_names: set[str] | None = None,
 ) -> str:
     """Assemble the full system prompt from all layers.
+
+    ``tool_names`` limits the tool summary to the tools actually offered to
+    the model; the registry is process-wide and may hold tools this agent
+    cannot call.
 
     Modes:
     - "full": Main agent — all layers
@@ -210,7 +215,7 @@ def build_system_prompt(
     parts.append(identity)
 
     # 2. Tool summary (compact bullet list — two-tier approach)
-    tool_summary = registry.get_tool_summary_list()
+    tool_summary = registry.get_tool_summary_list(tool_names)
     if extra_tool_summary:
         tool_summary = "\n".join(part for part in (tool_summary, extra_tool_summary) if part)
     if tool_summary:

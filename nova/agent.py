@@ -329,6 +329,9 @@ class NovaAgent:
             mode=resolved_mode,
             wiki_content=wiki_content,
             extra_tool_summary=self._mcp_summary(),
+            tool_names={
+                definition["function"]["name"] for definition in self._builtin_tool_definitions()
+            },
         )
 
     def _refresh_system_prompt(self, mode: str | None = None):
@@ -1126,12 +1129,12 @@ class NovaAgent:
         except sqlite3.Error as exc:
             logger.warning("Could not persist %s message: %s", role, type(exc).__name__)
 
-    def _get_tool_definitions(self) -> list[dict[str, Any]]:
-        """Return the tools available to this agent instance.
+    def _builtin_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return this agent's registry tools after per-agent config gates.
 
-        The registry is process-global for backwards compatibility, so
-        per-agent configuration gates must be applied when building the
-        provider request rather than only during import-time registration.
+        The registry is process-global, so gates are applied here rather than
+        only at registration. Both the prompt summary and the provider request
+        use this list so they always agree.
         """
         definitions = registry.get_definitions(config=self.config)
         web_config = self.config.get("web", {})
@@ -1149,6 +1152,11 @@ class NovaAgent:
             if name == "delegate_task" and (not delegation_enabled or depth >= max_depth):
                 continue
             available.append(definition)
+        return available
+
+    def _get_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return the tools available to this agent instance."""
+        available = self._builtin_tool_definitions()
         for name, tool in self._mcp_tools.items():
             schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
             available.append(

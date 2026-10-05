@@ -561,3 +561,24 @@ def test_untrusted_flag_restored_when_resuming_session(minimal_config, mock_sess
     )
 
     assert agent._untrusted_content_seen is True
+
+
+def _prompt_tool_names(prompt: str) -> set[str]:
+    section = prompt.split("## Available Tools\n", 1)[1].split("\n\n", 1)[0]
+    return {line[2:].split(":", 1)[0] for line in section.splitlines() if line.startswith("- ")}
+
+
+def test_prompt_lists_exactly_the_tools_sent_to_the_api(minimal_config, mock_session_store):
+    # Another agent in this process registers delegate_task globally.
+    discover_builtin_tools({"delegation": {"enabled": True}})
+    minimal_config["delegation"] = {"enabled": False}
+
+    agent = NovaAgent(
+        config=minimal_config,
+        openai_client=MagicMock(spec=OpenAI),
+        session_store=mock_session_store,
+    )
+
+    api_names = {d["function"]["name"] for d in agent._get_tool_definitions()}
+    assert "delegate_task" not in api_names
+    assert _prompt_tool_names(agent._system_prompt or "") == api_names
