@@ -194,3 +194,20 @@ def test_provider_preserves_nested_cache_usage(mock_openai_client, streaming):
     assert extracted["input_tokens"] == 100
     assert extracted["cache_read_tokens"] == 90
     assert extracted["output_tokens"] == 5
+
+
+def test_stream_response_captures_usage_on_final_choice_chunk(mock_openai_client):
+    final = make_text_chunk(" done")
+    final.choices[0].finish_reason = "stop"
+    final.usage = CompletionUsage(prompt_tokens=30, completion_tokens=5, total_tokens=35)
+    mock_openai_client.chat.completions.create.return_value = make_mock_stream(
+        make_text_chunk("all"), final
+    )
+
+    result = stream_response(
+        mock_openai_client,
+        {"model": "test-model", "messages": [], "temperature": 0.7, "top_p": 1.0},
+    )
+
+    assert result["usage"]["prompt_tokens"] == 30
+    assert result["choices"][0]["message"]["content"] == "all done"

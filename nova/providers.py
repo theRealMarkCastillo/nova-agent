@@ -93,12 +93,14 @@ def stream_response(
     with client.chat.completions.create(**request_kwargs) as stream:  # type: ignore[call-overload]
         usage: dict[str, Any] | None = None
         for chunk in stream:
+            # Most providers send usage on a trailing choice-less chunk; some
+            # attach it to the final chunk that still carries a choice.
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None and hasattr(chunk_usage, "model_dump"):
+                dumped_usage = chunk_usage.model_dump()
+                if isinstance(dumped_usage, dict):
+                    usage = dumped_usage
             if not chunk.choices:
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage is not None and hasattr(chunk_usage, "model_dump"):
-                    dumped_usage = chunk_usage.model_dump()
-                    if isinstance(dumped_usage, dict):
-                        usage = dumped_usage
                 continue
             chunk_finish_reason = chunk.choices[0].finish_reason
             if isinstance(chunk_finish_reason, str):
