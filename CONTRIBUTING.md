@@ -28,16 +28,14 @@ ruff check --fix .
 git clone https://github.com/eidolonlabs-ai/nova-agent.git
 cd nova-agent
 
-# Create a virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+# Install dependencies and sync virtual environment
+uv sync --all-extras
 
 # Verify everything works
-ruff check . && mypy nova/ && pytest
+uv run ruff check . && uv run mypy nova/ && uv run pytest
 ```
+
+*(Alternatively, traditional venv: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]" && pytest`)*
 
 ## Code Quality Standards
 

@@ -128,20 +128,21 @@ Pulls the latest code and reinstalls dependencies.
 ```bash
 git clone https://github.com/eidolonlabs-ai/nova-agent.git
 cd nova-agent
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --all-extras
 ```
+
+*(Alternatively, traditional venv: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`)*
 
 **Run tests:**
 
 ```bash
-ruff check . && mypy nova/ && pytest
+uv run ruff check . && uv run mypy nova/ && uv run pytest
 ```
 
 **Run:**
 
 ```bash
-nova chat
+uv run nova chat
 ```
 
 Nova can also be launched as an Agent Client Protocol (ACP) stdio server:

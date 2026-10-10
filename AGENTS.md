@@ -50,10 +50,11 @@ Nova Agent is a lightweight personal AI agent with explicit token budgets and sm
 ### Installation
 
 ```bash
-# Create and activate venv
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+# Using modern uv (recommended)
+uv sync --all-extras
+
+# Or traditional venv
+# python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 ```
 
 ### Essential Commands
@@ -201,11 +202,10 @@ Use the next available number in sequence. Check `docs/DOCUMENTATION_INDEX.md` f
 ## Working in Worktrees
 
 When you create or enter a worktree, make sure to:
-1. Set up the venv: `python3 -m venv .venv`
-2. Install: `.venv/bin/pip install -e ".[dev]"`
-3. Run tests to ensure isolation: `.venv/bin/pytest`
+1. Sync environment: `uv sync --all-extras`
+2. Run tests to ensure isolation: `uv run pytest`
 
-Use `.venv/bin/python`, `.venv/bin/pytest`, and `.venv/bin/ruff` — never global python3 or pytest.
+Use `uv run python`, `uv run pytest`, and `uv run ruff` (or the local `.venv/bin/*` binaries) — never global python3 or pytest.
 
 ## Session Continuity Protocol (MANDATORY)
 

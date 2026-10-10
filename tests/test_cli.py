@@ -510,6 +510,7 @@ class TestCmdSetup:
             with (
                 patch("nova.cli.ensure_nova_home") as mock_ensure,
                 patch.dict("os.environ", {}, clear=True),
+                patch("getpass.getpass", return_value=""),
                 patch("builtins.input", return_value=""),
             ):  # no API key
                 mock_ensure.return_value = Path(tmpdir)
