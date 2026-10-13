@@ -44,8 +44,28 @@ config.yaml
 .DS_Store
 Thumbs.db
 
-# Claude Code
-.claude/worktrees/
+# Share only portable Entire settings/hooks; keep other agent state local.
+!/.agents/
+/.agents/*
+!/.agents/hooks.json
+!/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.codex/
+/.codex/*
+!/.codex/hooks.json
+!/.opencode/
+/.opencode/*
+!/.opencode/plugins/
+/.opencode/plugins/*
+!/.opencode/plugins/entire.ts
+
+# Entire's nested ignore file excludes its runtime data and personal settings.
+!/.entire/
+/.entire/*
+!/.entire/.gitignore
+!/.entire/settings.json
+!/.entire/redactors/
 
 # mypy
 .mypy_cache/
