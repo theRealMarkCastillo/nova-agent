@@ -93,4 +93,4 @@ After merge verification, retain a recoverable archive of the mixed provider sta
 | [Customization Guide](GUIDE-003-CUSTOMIZING.md) | Model and provider configuration |
 | [SDK Specification](SPEC-003-NOVA_SDK_PUBLIC_API.md) | Future multi-endpoint considerations |
 | [Contribution Guide](../CONTRIBUTING.md) | Validation and contribution workflow |
-| [Session Handoff](../HANDOFF.md) | Current work state and audit evidence |
+| [Entire session continuity](../AGENTS.md#session-continuity--entire) | Session history, work state and validation evidence |

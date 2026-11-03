@@ -207,32 +207,28 @@ When you create or enter a worktree, make sure to:
 
 Use `uv run python`, `uv run pytest`, and `uv run ruff` (or the local `.venv/bin/*` binaries) — never global python3 or pytest.
 
-## Session Continuity Protocol (MANDATORY)
+## Session Continuity — Entire
 
-You are collaborating with other AI agents (Codex CLI, Antigravity CLI, Hermes CLI, OpenCode CLI) and human developers on this repository.
+Entire is the source of session continuity. The handoff document protocol is retired;
+do not create or maintain session handoff files.
 
-1. **SESSION START:**
-   - Immediately read `HANDOFF.md` at the repository root.
-   - If `Current Status` is `IN_PROGRESS` or `BLOCKED`, read Section 3 (`Immediate Next Action`).
-   - Run the specified verification command to confirm state before modifying code.
-   - Do NOT re-plan from scratch unless the documented hypothesis is disproven.
+- At session start, read `.entire/agent-guide.md`, inspect `git status`, and recover
+  relevant decisions and next actions from Entire sessions and checkpoints.
+- Check recorded context against current source and verification results before acting.
+- Before yielding, record the outcome, files changed, validation pass/fail/pending
+  state, blockers, and next action in the tracked session. Distinguish local,
+  committed, pushed, migrated, and deployed state.
+- If Entire retrieval or tracking fails, report the gap and inspect current Git and
+  source state; do not recreate the handoff protocol.
+- Run verification appropriate to the change. Entire records context; it does not
+  establish correctness or authorize commits, pushes, deployments, or migrations.
+- Preserve unrelated work and stage only intended files or hunks when a commit is
+  authorized. Do not force a WIP commit or reset another session's commit merely
+  to end or resume a session.
 
-2. **GIT & WORKTREE DISCIPLINE:**
-   - **No Dirty Trees Across Sessions:** Never yield with uncommitted changes or unstaged edits. Before yielding, run:
-     `git add -A && git commit -m "wip: handoff to next agent"`
-     (Incoming agents may run `git reset --soft HEAD~1` if continuing uncommitted changes).
-   - **Worktree Isolation:** If creating a Git worktree, place it under `.worktrees/<branch-name>`.
-   - **Avoid Branch Collisions:** Before checking out or creating branches, run `git worktree list` to ensure the branch is not already locked by another worktree.
-   - **Pruning:** Run `git worktree prune` when cleaning up stale or removed worktrees.
-   - **Tool State Isolation:** Do NOT commit or alter other agents' session directories (`.codex/`, `.opencode/`, `.antigravity/`, `.hermes/`, `*.session.json`).
+### Git & Worktree Discipline
 
-3. **SESSION END / HANDOFF:**
-   - Before completing your run or yielding back to the user:
-     a. Run your test/lint command to know exact pass/fail state.
-     b. Commit all modified files with a descriptive or WIP message.
-     c. Update `HANDOFF.md` with:
-        - Exact files you touched
-        - Current test state (what passes, what fails)
-        - The exact command or file the next agent should touch first
-     d. Set `Current Status` to `IN_PROGRESS`, `BLOCKED`, or `COMPLETE`.
-   - If the task is 100% complete and all tests pass, set `Current Status: COMPLETE` and clear Section 3.
+- **Worktree Isolation:** If creating a Git worktree, place it under `.worktrees/<branch-name>`.
+- **Avoid Branch Collisions:** Before checking out or creating branches, run `git worktree list` to ensure the branch is not already locked by another worktree.
+- **Pruning:** Run `git worktree prune` when cleaning up stale or removed worktrees.
+- **Tool State Isolation:** Do NOT commit or alter other agents' session directories (`.codex/`, `.opencode/`, `.antigravity/`, `.hermes/`, `*.session.json`).

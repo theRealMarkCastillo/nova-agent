@@ -205,4 +205,4 @@ from `messages`. Acceptance: write time is flat as sessions grow;
 | [GUIDE-012 Session Management](GUIDE-012-SESSION_MANAGEMENT.md) | Session storage affected by M4 |
 | [ADR-002 Sub-agent Design](ADR-002-SUBAGENT_DESIGN.md) | Sub-agent model affected by M3 |
 | [SPEC-003 Nova SDK Public API](SPEC-003-NOVA_SDK_PUBLIC_API.md) | Public surface that Phase 3 should precede |
-| [Session Handoff](../HANDOFF.md) | Current work state |
+| [Entire session continuity](../AGENTS.md#session-continuity--entire) | Session history and work state |
