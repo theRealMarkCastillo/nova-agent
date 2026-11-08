@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M6YQE0W9JV3MYD9BPV6YF0D5",
+  "strategy": "manual-commit",
+  "branch": "feat/catalog-evals",
+  "checkpoints_count": 11,
+  "files_touched": [
+    "README.md",
+    "config.yaml.example",
+    "docs/ADR-004-SDK_PRODUCTIZATION.md",
+    "docs/DOCUMENTATION_INDEX.md",
+    "docs/GUIDE-010-ROADMAP.md",
+    "docs/RELEASE-001-0.1.0.md",
+    "docs/REPORT-002-ACP_IMPLEMENTATION_HANDOFF.md",
+    "docs/RESEARCH-001-AGENTCORE_HOSTING.md",
+    "docs/SPEC-002-ACP_INTEGRATION.md",
+    "docs/SPEC-003-NOVA_SDK_PUBLIC_API.md",
+    "docs/SPEC-006-CALLABLE_AGENT_PLAN.md",
+    "docs/SPEC-007-CATALOG_SCALING_AND_EVALS.md",
+    "nova/acp_server.py",
+    "nova/agent.py",
+    "nova/cli.py",
+    "nova/config.py",
+    "nova/evaluation.py",
+    "nova/mcp_client.py",
+    "nova/mlflow_observability.py",
+    "nova/observability.py",
+    "nova/permissions.py",
+    "nova/skills.py",
+    "nova/tool_catalog.py",
+    "nova/tool_executor.py",
+    "nova/tools/skills_tool.py",
+    "pyproject.toml",
+    "tests/test_acp_server.py",
+    "tests/test_catalog_scaling.py",
+    "tests/test_cli.py",
+    "tests/test_config.py",
+    "tests/test_deferred_mcp.py",
+    "tests/test_evaluation.py",
+    "tests/test_metadata_cache.py",
+    "tests/test_mlflow_observability.py",
+    "tests/test_skills_tool.py",
+    "tests/test_tool_catalog.py",
+    "uv.lock"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 274349,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 19878912,
+    "output_tokens": 68961,
+    "api_call_count": 144,
+    "subagent_tokens": {
+      "input_tokens": 42966,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 3739648,
+      "output_tokens": 3999,
+      "api_call_count": 20
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 32,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 9,
+      "credentialed_uri": 2,
+      "entropy": 21,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}

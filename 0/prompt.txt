@@ -1,0 +1,49 @@
+what's next for this project?
+
+---
+
+do we really need ACP? we wouldn't every embed nova agent in an IDE
+
+---
+
+one key think is the ability to call nova agent from another coding agent or other agent.. like in claude code cli or claude skd from other code.. but not from IDE
+
+---
+
+ok can we make a plan
+
+---
+
+we can actually remove the ACP FUNCTIONALITY if it make more sense to just remove it.
+
+---
+
+so the other parts I want review is tool calling catalog, mcp support, and skills support. like when the list of tools and skills grow, how to optimize that? also, we need to create or update the tests/eval suite. Maybe we could use MLflow for tracing and evals?
+
+---
+
+with mlflow we could do a lot of the evals/tracing/debugging locally with local mlflow
+
+---
+
+so langfuse would be used in "production" and mlflow would be used in development? or do you recommend just sticking to MLFlow for both?
+
+---
+
+ok make a plan for what next and let's keep going
+
+---
+
+ok continue
+
+---
+
+ok what's next for implementation?
+
+---
+
+continue
+
+---
+
+continue
