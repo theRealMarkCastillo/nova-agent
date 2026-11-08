@@ -1,9 +1,11 @@
 # SPEC-002: ACP Integration — Client MCP Servers & Editor Parity
 
-**Status:** 📋 Planned
-**Last Updated:** August 2026
+**Status:** 🔴 Retired
+**Last Updated:** November 2026
 **Type:** SPEC (Feature Specification)
 **Author:** Eidolon Labs LLC
+
+> Historical document: ACP functionality was removed in November 2026. The implementation and future work described below no longer apply. Agent-to-agent invocation is planned in [SPEC-006](SPEC-006-CALLABLE_AGENT_PLAN.md).
 
 ---
 

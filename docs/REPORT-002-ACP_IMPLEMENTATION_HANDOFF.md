@@ -1,8 +1,10 @@
 # REPORT-002: ACP Implementation Handoff
 
-**Status:** ✅ Active
-**Last Updated:** August 2026
+**Status:** 🔴 Retired
+**Last Updated:** November 2026
 **Type:** REPORT (Development Handoff)
+
+> Historical document: ACP functionality was removed in November 2026. The implementation and future work described below no longer apply. Agent-to-agent invocation is planned in [SPEC-006](SPEC-006-CALLABLE_AGENT_PLAN.md).
 
 ---
 

@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from nova.cli import (
-    cmd_acp,
     cmd_ask,
     cmd_chat,
     cmd_reset,
@@ -51,41 +50,6 @@ def test_cli_chat_continue_command_parsing(flag):
             main()
         args = mock_chat.call_args.args[0]
         assert args.continue_session is True
-
-
-def test_cli_acp_command_parsing():
-    with patch("nova.cli.cmd_acp") as mock_acp:
-        with patch.object(sys, "argv", ["nova", "acp"]):
-            main()
-        mock_acp.assert_called_once()
-
-
-def test_cmd_acp_runs_server_without_writing_stdout(capsys):
-    args = MagicMock()
-    with (
-        patch("nova.cli.load_config", return_value={"test": "config"}),
-        patch("nova.acp_server.run_acp_server") as run_server,
-        patch("nova.cli.asyncio.run") as asyncio_run,
-    ):
-        cmd_acp(args)
-
-    run_server.assert_called_once_with({"test": "config"})
-    asyncio_run.assert_called_once()
-    asyncio_run.call_args.args[0].close()
-    assert capsys.readouterr().out == ""
-
-
-def test_cli_acp_interrupt_keeps_stdout_protocol_only(capsys):
-    with (
-        patch("nova.cli.cmd_acp", side_effect=KeyboardInterrupt),
-        patch.object(sys, "argv", ["nova", "acp"]),
-        pytest.raises(SystemExit, match="130"),
-    ):
-        main()
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "Interrupted" in captured.err
 
 
 def test_cli_chat_with_session():

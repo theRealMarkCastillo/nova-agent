@@ -1,7 +1,7 @@
 # Nova Agent Roadmap
 
 **Status:** ✅ Active
-**Last Updated:** August 2026
+**Last Updated:** November 2026
 **Type:** GUIDE (Developer Reference)
 
 Nova is release-ready. The roadmap now tracks priorities rather than fixed calendar phases so implementation can follow product value and integration readiness.
@@ -13,7 +13,6 @@ Nova is release-ready. The roadmap now tracks priorities rather than fixed calen
 - ✅ Built-in tools for files, search, terminal, Git, HTTP, web, wiki memory, skills, tasks, and delegation
 - ✅ Permissions, hooks, cost tracking, retries, parallel read-only execution, and harness observability
 - ✅ MCP client support for stdio, HTTP, and SSE transports
-- ✅ ACP stdio server with session lifecycle, workspace isolation, cancellation, and tool-call progress
 - ✅ Firecrawl integration with credit-aware confirmation, bounded results, path safety, and untrusted-content labeling
 - ✅ Security and reliability hardening across MCP, web tools, sessions, context handling, background tasks, Git, and wiki memory
 - ✅ Release validation: 1169 tests passing, 83.72% coverage, Ruff clean, and mypy clean
@@ -46,15 +45,16 @@ Expand integrations without weakening safety or observability:
 - 📋 Additional Firecrawl workflows and usage controls based on real release feedback
 - 📋 Integration tests for web and MCP failures, timeouts, malformed responses, and provider limits
 
-## Next: ACP Integrations 🟡
+## Next: Callable Agent 📋
 
-Complete the ACP integration contract and validate it with a real client:
+Prioritize delegation from another coding agent or application through the CLI and Python SDK. Follow [SPEC-006](SPEC-006-CALLABLE_AGENT_PLAN.md):
 
-- 📋 ACP permission bridging through `session/request_permission`
-- 📋 Client-provided MCP server configuration
-- 📋 Truthful `session/list` and `session/close` support, if required by clients
-- 📋 End-to-end validation in Zed or another ACP-compatible editor
-- 📋 Stdio transport integration tests beyond the adapter-level suite
+- 📋 Shared typed run results and progress events
+- 📋 Noninteractive JSON/JSONL CLI output
+- 📋 Explicit permissions, budgets, cancellation, and session ownership
+- 📋 Public Python invocation API and real calling-agent validation
+
+ACP and IDE integration have been retired; the shared engine capabilities remain.
 
 ## Later: Optional Capabilities 📋
 
@@ -85,7 +85,7 @@ The following remain deliberate trade-offs:
 | Document | Purpose |
 |----------|---------|
 | [Documentation Index](DOCUMENTATION_INDEX.md) | Full inventory of project documentation |
-| [ACP Implementation Handoff](REPORT-002-ACP_IMPLEMENTATION_HANDOFF.md) | ACP implementation state and follow-on work |
+| [Callable Agent Plan](SPEC-006-CALLABLE_AGENT_PLAN.md) | CLI and SDK delegation milestone |
 | [MCP Integration](GUIDE-007-MCP_INTEGRATION.md) | MCP transports, configuration, and security behavior |
 | [Context Compaction](GUIDE-011-CONTEXT_COMPRESSION.md) | Long-session context management and historical retrieval |
 | [Contributing](../CONTRIBUTING.md) | Development setup and contribution workflow |

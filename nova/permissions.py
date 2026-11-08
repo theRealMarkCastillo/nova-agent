@@ -60,7 +60,7 @@ _DEFAULT_DENIED_COMMANDS: tuple[str, ...] = (
 _EGRESS_TOOL_PREFIXES: tuple[str, ...] = ("http_", "web_")
 # Tools whose output comes from outside the user's control.
 _UNTRUSTED_OUTPUT_PREFIXES: tuple[str, ...] = ("http_", "web_", "mcp__")
-_UNTRUSTED_OUTPUT_TOOLS: frozenset[str] = frozenset({"mcp_read_resource"})
+_UNTRUSTED_OUTPUT_TOOLS: frozenset[str] = frozenset({"mcp_read_resource", "discover_tools"})
 
 
 def is_egress_tool(tool_name: str) -> bool:

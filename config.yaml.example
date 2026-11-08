@@ -108,6 +108,8 @@ mcp:
     #   type: stdio
     #   command: npx
     #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+    #   deferred: true  # Connect on explicit discovery; requires tool_catalog.enabled
+    #   description: "Search and edit files in the configured directory"
 
     # Example: Remote API server (Streamable HTTP)
     # remote-api:
@@ -150,15 +152,23 @@ retry:
   base_delay: 1.0                 # Initial delay in seconds (exponential backoff)
   max_delay: 60.0                 # Maximum delay cap
 
-# Optional Langfuse observability (disabled by default)
+# Optional observability (disabled by default; provider: langfuse or mlflow)
 observability:
   enabled: false
   provider: langfuse
   sample_rate: 1.0
   capture_input: false
   capture_output: false
+  mlflow:
+    tracking_uri: "http://127.0.0.1:5000"
+    experiment: "nova-agent"
   langfuse:
     public_key: "${LANGFUSE_PUBLIC_KEY}"
     secret_key: "${LANGFUSE_SECRET_KEY}"
     base_url: "${LANGFUSE_BASE_URL}"
     flush_at_shutdown: true
+
+# Keep full schemas for small catalogs; discover and activate tools when larger.
+tool_catalog:
+  enabled: true
+  schema_max_tokens: 4096

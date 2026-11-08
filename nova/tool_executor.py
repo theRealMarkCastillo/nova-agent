@@ -20,11 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from nova.context import label_external_content
 from nova.harness import VerificationResult
 from nova.hooks import EVENT_POST_TOOL_CALL, EVENT_PRE_TOOL_CALL, hooks
 from nova.mcp_client import McpToolInfo
 from nova.observability import redact
 from nova.permissions import PermissionResult, has_untrusted_output, is_egress_tool
+from nova.tool_catalog import DISCOVERY_TOOL
 from nova.tools.registry import ToolEntry, registry
 from nova.tools.result import ToolResult
 
@@ -136,6 +138,7 @@ class ToolExecutor:
 
     def run(self, tool_call: dict) -> ToolResult:
         """Run one tool call through the full pipeline."""
+        started = time.monotonic()
         call = self._parse(tool_call)
         collector = self._agent._active_trace
         trace = (
@@ -177,6 +180,7 @@ class ToolExecutor:
             output_data=result.content,
             status=result.status,
             retries=max(0, attempts - 1),
+            duration_ms=(time.monotonic() - started) * 1000,
         )
         observability.verification(
             call.name,
@@ -197,12 +201,29 @@ class ToolExecutor:
         if self._interrupted():
             return ToolResult.interrupted(), 0
 
+        catalog_enabled = self._agent.config.get("tool_catalog", {}).get("enabled", False)
+        if catalog_enabled:
+            offered_names = getattr(self._agent, "_offered_tool_names", None)
+            if offered_names is None:
+                eligible = {
+                    item["function"]["name"] for item in self._agent._get_tool_definitions()
+                }
+            else:
+                available = {
+                    item["function"]["name"] for item in self._agent._all_tool_definitions()
+                }
+                eligible = offered_names & (available | {DISCOVERY_TOOL})
+            if name not in eligible:
+                return ToolResult.denied(
+                    f"Error: Tool '{name}' is not active. Use discover_tools first."
+                ), 0
+        is_discovery = catalog_enabled and name == DISCOVERY_TOOL
         entry = registry.get_tool(name)
         mcp_tool = self._agent._mcp_tool_info(name)
         is_resource = name == MCP_RESOURCE_TOOL
-        if entry is None and mcp_tool is None and not is_resource:
+        if entry is None and mcp_tool is None and not is_resource and not is_discovery:
             return ToolResult.failed(f"Error: Unknown tool: {name}", "unknown_tool"), 0
-        is_read_only = entry.is_read_only if entry else is_resource
+        is_read_only = entry.is_read_only if entry else (is_resource or is_discovery)
 
         permission = self._evaluate_policy(name, entry, is_read_only, arguments)
         self._agent.observability.policy(name, allowed=permission.allowed, reason=permission.reason)
@@ -290,6 +311,16 @@ class ToolExecutor:
         is_resource: bool,
     ) -> ToolResult:
         agent = self._agent
+        if name == DISCOVERY_TOOL and agent.config.get("tool_catalog", {}).get("enabled", False):
+            result = agent._discover_tools(
+                arguments.get("query", ""),
+                limit=arguments.get("limit", 5),
+                server=arguments.get("server"),
+            )
+            agent._refresh_system_prompt()
+            return ToolResult(
+                "completed", label_external_content(json.dumps(result), source="tool catalog")
+            )
         if mcp_tool is not None:
             with self._mcp_lock:
                 if self._interrupted():

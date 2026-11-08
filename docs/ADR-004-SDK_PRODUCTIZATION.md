@@ -5,6 +5,8 @@
 **Type:** ADR (Architecture Decision)
 **Author:** Eidolon Labs LLC
 
+> November 2026 update: ACP has been removed. References below describe historical functionality or rationale, not a supported interface. The current direction is [CLI and SDK delegation](SPEC-006-CALLABLE_AGENT_PLAN.md).
+
 ---
 
 ## Problem

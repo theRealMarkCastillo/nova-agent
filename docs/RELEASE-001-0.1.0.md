@@ -4,6 +4,8 @@
 **Last Updated:** August 2026
 **Type:** RELEASE (Customer-Facing Changelog)
 
+> November 2026 update: ACP has been removed. References below describe historical functionality or rationale, not a supported interface. The current direction is [CLI and SDK delegation](SPEC-006-CALLABLE_AGENT_PLAN.md).
+
 ## Summary
 
 Nova Agent 0.1.0 is an alpha release focused on local, secure, and observable agent workflows.

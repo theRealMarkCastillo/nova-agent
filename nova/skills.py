@@ -11,6 +11,8 @@ for pasting into CLAUDE.md, system prompts, or other agent frameworks.
 
 import json
 import logging
+from functools import lru_cache
+from html import escape
 from pathlib import Path
 
 import yaml
@@ -61,9 +63,29 @@ def extract_skill_description(frontmatter: dict, body: str, max_chars: int = 200
     return first_para[:max_chars]
 
 
+def _skill_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+@lru_cache(maxsize=4096)
+def _skill_metadata(path: str, fingerprint: tuple[int, int, int, int, int]) -> tuple[str, str, str]:
+    skill_file = Path(path)
+    content = skill_file.read_text(encoding="utf-8")
+    if _skill_fingerprint(skill_file) != fingerprint:
+        raise OSError("Skill changed while reading metadata")
+    frontmatter, body = parse_frontmatter(content)
+    name = frontmatter.get("name", skill_file.parent.name)
+    category = frontmatter.get("category", "general")
+    description = extract_skill_description(frontmatter, body)
+    if not all(isinstance(value, str) for value in (name, category, description)):
+        raise ValueError("Skill metadata must be strings")
+    return name, category, description
+
+
 def discover_skills(
     skills_dir: Path,
-    max_count: int = 50,
+    max_count: int | None = 50,
     max_chars: int = 15000,
 ) -> list[dict]:
     """Discover skills in a directory.
@@ -83,12 +105,9 @@ def discover_skills(
             continue
 
         try:
-            content = skill_file.read_text(encoding="utf-8")
-            frontmatter, body = parse_frontmatter(content)
-
-            name = frontmatter.get("name", skill_dir.name)
-            category = frontmatter.get("category", "general")
-            description = extract_skill_description(frontmatter, body)
+            name, category, description = _skill_metadata(
+                str(skill_file.absolute()), _skill_fingerprint(skill_file)
+            )
 
             skills.append(
                 {
@@ -137,24 +156,37 @@ def build_skills_prompt(
         "One skill per task is the norm; load more only if the first explicitly references another."
     )
 
-    for category in sorted(by_category.keys()):
-        lines.append(f'  <category name="{category}">')
+    guidance = "\n".join(lines)
+    footer = "\n</skills>"
+    marker = "\n  [...skills truncated; use skills_list to discover more...]"
+    if max_chars <= 0:
+        return ""
+    if len(guidance + footer + marker) > max_chars:
+        guidance = "<skills>"
+    if len(guidance + footer + marker) > max_chars:
+        return ""
+    result = guidance
+    omitted = False
+    for category in sorted(by_category):
+        category_open = f'\n  <category name="{escape(str(category), quote=True)}">'
+        category_close = "\n  </category>"
+        entries = ""
         for skill in by_category[category]:
             description = skill["description"]
             if find_content_threats(description):
                 description = "[description withheld: potential prompt injection]"
-            lines.append(f'    <skill name="{skill["name"]}">{description}</skill>')
-        lines.append("  </category>")
-
-    lines.append("</skills>")
-
-    result = "\n".join(lines)
-
-    # Enforce character limit
-    if len(result) > max_chars:
-        result = result[:max_chars] + "\n  [...skills truncated...]"
-
-    return result
+            entry = (
+                f'\n    <skill name="{escape(str(skill["name"]), quote=True)}">'
+                f"{escape(str(description))}</skill>"
+            )
+            candidate = result + category_open + entries + entry + category_close
+            if len(candidate + marker + footer) <= max_chars:
+                entries += entry
+            else:
+                omitted = True
+        if entries:
+            result += category_open + entries + category_close
+    return result + (marker if omitted else "") + footer
 
 
 def load_skill_content(skill_path: str, skill_dir: Path | None = None) -> str | None:

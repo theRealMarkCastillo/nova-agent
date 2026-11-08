@@ -88,6 +88,7 @@ DEFAULT_CONFIG = {
     "mcp": {
         "servers": {},
     },
+    "tool_catalog": {"enabled": True, "schema_max_tokens": 4096},
     "cost_tracking": {
         "enabled": True,
     },
@@ -168,6 +169,13 @@ def _validate_config(config: dict[str, Any]) -> None:
         if not isinstance(value, int) or value < 1:
             raise ConfigError(f"budgets.{name} must be a positive integer")
 
+    catalog = config.get("tool_catalog", {})
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("enabled", False), bool):
+        raise ConfigError("tool_catalog must be a mapping with boolean enabled")
+    budget = catalog.get("schema_max_tokens", 4096)
+    if type(budget) is not int or budget < 1:
+        raise ConfigError("tool_catalog.schema_max_tokens must be a positive integer")
+
     microcompact = config["microcompact"]
     if not isinstance(microcompact.get("keep_recent"), int) or microcompact["keep_recent"] < 0:
         raise ConfigError("microcompact.keep_recent must be a non-negative integer")
@@ -182,8 +190,14 @@ def _validate_config(config: dict[str, Any]) -> None:
         or not 0.0 <= sample_rate <= 1.0
     ):
         raise ConfigError("observability.sample_rate must be between 0.0 and 1.0")
-    if observability.get("provider", "langfuse") not in {"langfuse"}:
-        raise ConfigError("observability.provider must be 'langfuse'")
+    if observability.get("provider", "langfuse") not in {"langfuse", "mlflow"}:
+        raise ConfigError("observability.provider must be 'langfuse' or 'mlflow'")
+    mlflow = observability.get("mlflow", {})
+    if not isinstance(mlflow, dict):
+        raise ConfigError("observability.mlflow must be a mapping")
+    for key in ("tracking_uri", "experiment"):
+        if key in mlflow and (not isinstance(mlflow[key], str) or not mlflow[key].strip()):
+            raise ConfigError(f"observability.mlflow.{key} must be a nonempty string")
     langfuse = observability.get("langfuse", {})
     if not isinstance(langfuse, dict):
         raise ConfigError("observability.langfuse must be a mapping")
@@ -241,6 +255,10 @@ def _validate_config(config: dict[str, Any]) -> None:
             raise ConfigError("mcp server names must be non-empty strings")
         if not isinstance(server, dict):
             raise ConfigError(f"mcp.servers.{name} must be a mapping")
+        if type(server.get("deferred", False)) is not bool:
+            raise ConfigError(f"mcp.servers.{name}.deferred must be a boolean")
+        if not isinstance(server.get("description", ""), str):
+            raise ConfigError(f"mcp.servers.{name}.description must be a string")
         server_type = server.get("type", "stdio")
         if server_type not in {"stdio", "http", "sse"}:
             raise ConfigError(f"mcp.servers.{name}.type must be stdio, http, or sse")
@@ -360,6 +378,8 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
             if isinstance(user_config.get("observability"), dict):
                 observability = user_config["observability"]
                 for key in (
+                    "provider",
+                    "mlflow",
                     "enabled",
                     "sample_rate",
                     "capture_input",

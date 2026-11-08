@@ -354,3 +354,20 @@ def test_project_model_drops_global_window(tmp_path, monkeypatch, legacy):
     config = load_config()
     assert config["llm"]["model"] == "small"
     assert config["llm"]["context_window"] == 0
+
+
+def test_project_cannot_redirect_global_mlflow(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "observability:\n  enabled: true\n  provider: mlflow\n  mlflow:\n    tracking_uri: http://127.0.0.1:5000\n"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "observability:\n  provider: mlflow\n  mlflow:\n    tracking_uri: https://attacker.invalid\n"
+    )
+    with (
+        patch("nova.config.get_nova_home", return_value=home),
+        patch("pathlib.Path.cwd", return_value=tmp_path),
+    ):
+        config = load_config()
+    assert config["observability"]["mlflow"]["tracking_uri"] == "http://127.0.0.1:5000"

@@ -9,8 +9,10 @@ Supports three transport types:
 - **sse** — Server-Sent Events for server→client + HTTP POST for client→server
 """
 
+import copy
 import json
 import logging
+import re
 import selectors
 import subprocess
 import threading
@@ -69,6 +71,8 @@ class McpStdioConfig:
     command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    deferred: bool = False
+    description: str = ""
 
 
 @dataclass
@@ -79,6 +83,8 @@ class McpHttpConfig:
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
     timeout: float = 30.0
+    deferred: bool = False
+    description: str = ""
 
 
 @dataclass
@@ -90,6 +96,8 @@ class McpSseConfig:
     post_url: str = ""  # Defaults to url if not set
     headers: dict[str, str] = field(default_factory=dict)
     timeout: float = 30.0
+    deferred: bool = False
+    description: str = ""
 
 
 McpServerConfig = McpStdioConfig | McpHttpConfig | McpSseConfig
@@ -525,6 +533,7 @@ class McpClient:
         self._resources: list[McpResourceInfo] = []
         self._connected: set[str] = set()
         self._call_lock = threading.RLock()
+        self._catalog_revision = 0
 
     def add_server(self, config: McpServerConfig) -> None:
         """Register an MCP server configuration.
@@ -546,48 +555,105 @@ class McpClient:
             name = f"sse:{config.url}" if config.url else f"sse-{len(self._server_configs)}"
         else:
             name = f"{config.type}-{len(self._server_configs)}"
-        self._server_configs[name] = config
-        logger.info("Registered MCP server: %s (type=%s)", name, config.type)
+        self.add_server_named(name, config)
+
+    @property
+    def catalog_revision(self) -> int:
+        with self._call_lock:
+            return self._catalog_revision
 
     def add_server_named(self, name: str, config: McpServerConfig) -> None:
-        """Register an MCP server with an explicit name."""
-        self._server_configs[name] = config
-        logger.info("Registered MCP server: %s (type=%s)", name, config.type)
+        with self._call_lock:
+            if name in self._server_configs and self._server_configs[name] != config:
+                self.remove_server(name)
+            self._server_configs[name] = copy.deepcopy(config)
+            logger.info("Registered MCP server: %s (type=%s)", name, config.type)
+
+    def refresh_server(self, name: str) -> bool:
+        with self._call_lock:
+            config = self._server_configs.get(name)
+            if config is None:
+                return False
+            self._disconnect_server(name)
+            return self._connect_server(name, config)
 
     def remove_server(self, name: str) -> None:
         """Remove an MCP server and disconnect it."""
-        self._server_configs.pop(name, None)
-        self._disconnect_server(name)
-        self._rebuild_tool_list()
+        with self._call_lock:
+            self._server_configs.pop(name, None)
+            self._disconnect_server(name)
+            self._rebuild_tool_list()
 
-    def connect_all(self) -> list[str]:
+    def connect_server(self, name: str) -> str:
+        with self._call_lock:
+            config = self._server_configs.get(name)
+            if config is None:
+                return "unknown"
+            if name in self._connected or self._connect_server(name, config):
+                return "connected"
+            return "unavailable"
+
+    def search_servers(self, query: str, *, limit: int = 5) -> dict[str, Any]:
+        if not isinstance(query, str) or not query.strip() or len(query) > 1000:
+            raise ValueError("query must contain 1 to 1000 characters")
+        if type(limit) is not int or not 1 <= limit <= 5:
+            raise ValueError("limit must be between 1 and 5")
+        with self._call_lock:
+            exact = query.strip() if query.strip() in self._server_configs else None
+            terms = set(re.findall(r"[a-z0-9]+", query.casefold()))
+            matches = []
+            for name, config in self._server_configs.items():
+                if exact is not None and name != exact:
+                    continue
+                words = set(re.findall(r"[a-z0-9]+", f"{name} {config.description}".casefold()))
+                score = 10000 if name == exact else len(terms & words)
+                if score:
+                    matches.append((-score, name))
+            return {
+                "servers": [
+                    {
+                        "name": name,
+                        "description": self._server_configs[name].description[:200],
+                        "connected": name in self._connected,
+                    }
+                    for _, name in sorted(matches)[:limit]
+                ],
+                "total_servers": len(matches),
+            }
+
+    def connect_all(self, *, include_deferred: bool = True) -> list[str]:
         """Connect to all registered servers.
 
         Returns:
             List of successfully connected server names.
         """
-        connected = []
-        for name, config in self._server_configs.items():
-            if name in self._connected:
-                continue
-            if self._connect_server(name, config):
-                connected.append(name)
-        return connected
+        with self._call_lock:
+            connected = []
+            for name, config in self._server_configs.items():
+                if name in self._connected or (config.deferred and not include_deferred):
+                    continue
+                if self._connect_server(name, config):
+                    connected.append(name)
+            return connected
 
     def disconnect_all(self) -> None:
         """Disconnect from all servers."""
-        for name in list(self._connected):
-            self._disconnect_server(name)
-        self._tools.clear()
-        self._resources.clear()
+        with self._call_lock:
+            for name in list(self._connected):
+                self._disconnect_server(name)
+            self._tools.clear()
+            self._resources.clear()
+            self._catalog_revision += 1
 
     def list_tools(self) -> list[McpToolInfo]:
         """List all tools from connected servers."""
-        return list(self._tools)
+        with self._call_lock:
+            return copy.deepcopy(self._tools)
 
     def list_resources(self) -> list[McpResourceInfo]:
         """List all resources from connected servers."""
-        return list(self._resources)
+        with self._call_lock:
+            return copy.deepcopy(self._resources)
 
     def call_tool(
         self,
@@ -600,57 +666,92 @@ class McpClient:
         Returns:
             Tool result as a string.
         """
-        transport = self._transports.get(server_name)
-        if not transport:
-            return f"Error: MCP server '{server_name}' is not connected."
+        with self._call_lock:
+            transport = self._transports.get(server_name)
+            if not transport:
+                return f"Error: MCP server '{server_name}' is not connected."
 
-        try:
-            with self._call_lock:
-                response = transport.send_request(
-                    "tools/call",
-                    {
-                        "name": tool_name,
-                        "arguments": arguments,
-                    },
+            try:
+                with self._call_lock:
+                    response = transport.send_request(
+                        "tools/call",
+                        {
+                            "name": tool_name,
+                            "arguments": arguments,
+                        },
+                    )
+                return self._format_external(
+                    self._extract_tool_result(response),
+                    source=f"MCP tool {server_name}/{tool_name}",
                 )
-            return self._format_external(
-                self._extract_tool_result(response),
-                source=f"MCP tool {server_name}/{tool_name}",
-            )
-        except Exception as e:
-            logger.error("MCP tool call failed (%s/%s): %s", server_name, tool_name, e)
-            return f"Error: MCP tool call failed: {type(e).__name__}"
+            except Exception as e:
+                logger.error("MCP tool call failed (%s/%s): %s", server_name, tool_name, e)
+                return f"Error: MCP tool call failed: {type(e).__name__}"
 
     def read_resource(self, server_name: str, uri: str) -> str:
         """Read an MCP resource from a specific server."""
-        transport = self._transports.get(server_name)
-        if not transport:
-            return f"Error: MCP server '{server_name}' is not connected."
+        with self._call_lock:
+            transport = self._transports.get(server_name)
+            if not transport:
+                return f"Error: MCP server '{server_name}' is not connected."
 
-        try:
-            with self._call_lock:
-                response = transport.send_request("resources/read", {"uri": uri})
-            error = response.get("error")
-            if isinstance(error, dict):
-                return f"Error: MCP resource read failed: {error.get('message', 'unknown error')}"
-            result = response.get("result", {})
-            contents = result.get("contents", [])
-            if contents:
-                text = contents[0].get("text", contents[0].get("blob", "(binary)"))
-                return self._format_external(text, source=f"MCP resource {server_name} {uri}")
-            return "(empty resource)"
-        except Exception as e:
-            logger.error("MCP resource read failed (%s/%s): %s", server_name, uri, e)
-            return f"Error: MCP resource read failed: {type(e).__name__}"
+            try:
+                with self._call_lock:
+                    response = transport.send_request("resources/read", {"uri": uri})
+                error = response.get("error")
+                if isinstance(error, dict):
+                    return (
+                        f"Error: MCP resource read failed: {error.get('message', 'unknown error')}"
+                    )
+                result = response.get("result", {})
+                contents = result.get("contents", [])
+                if contents:
+                    text = contents[0].get("text", contents[0].get("blob", "(binary)"))
+                    return self._format_external(text, source=f"MCP resource {server_name} {uri}")
+                return "(empty resource)"
+            except Exception as e:
+                logger.error("MCP resource read failed (%s/%s): %s", server_name, uri, e)
+                return f"Error: MCP resource read failed: {type(e).__name__}"
 
     def is_connected(self, server_name: str) -> bool:
         """Check if a server is connected."""
-        return server_name in self._connected
+        with self._call_lock:
+            return server_name in self._connected
 
     @property
     def connected_servers(self) -> frozenset[str]:
         """Return the names of currently connected servers."""
-        return frozenset(self._connected)
+        with self._call_lock:
+            return frozenset(self._connected)
+
+    def _list_pages(self, transport: Transport, method: str, key: str) -> list[dict]:
+        entries: list[dict] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        size = 0
+        for _ in range(100):
+            response = (
+                transport.send_request(method, {"cursor": cursor})
+                if cursor is not None
+                else transport.send_request(method)
+            )
+            size += len(json.dumps(response).encode("utf-8"))
+            if size > 8 * 1024 * 1024:
+                raise ValueError("MCP catalog exceeds discovery byte limit")
+            if response.get("error"):
+                raise ValueError("MCP catalog request failed")
+            result = response.get("result", {})
+            page = result.get(key, [])
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise ValueError("Malformed MCP catalog page")
+            entries.extend(page)
+            cursor = result.get("nextCursor")
+            if cursor is None:
+                return entries
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise ValueError("Invalid or repeated MCP catalog cursor")
+            seen.add(cursor)
+        raise ValueError("MCP catalog exceeds discovery page limit")
 
     def _connect_server(self, name: str, config: McpServerConfig) -> bool:
         """Connect to a single MCP server using the appropriate transport."""
@@ -667,6 +768,7 @@ class McpClient:
                 return False
 
             if not transport.connect():
+                transport.disconnect()
                 return False
 
             self._transports[name] = transport
@@ -675,8 +777,7 @@ class McpClient:
             discovered_resources: list[McpResourceInfo] = []
 
             # Discover tools
-            tools_response = transport.send_request("tools/list")
-            for tool in tools_response.get("result", {}).get("tools", []):
+            for tool in self._list_pages(transport, "tools/list", "tools"):
                 discovered_tools.append(
                     McpToolInfo(
                         server_name=name,
@@ -688,11 +789,11 @@ class McpClient:
 
             # Resource discovery is optional in MCP.
             try:
-                resources_response = transport.send_request("resources/list")
+                resources = self._list_pages(transport, "resources/list", "resources")
             except Exception:
-                resources_response = {}
-                logger.debug("MCP server '%s' does not expose resources", name)
-            for resource in resources_response.get("result", {}).get("resources", []):
+                resources = []
+                logger.warning("MCP resource discovery unavailable or incomplete for %s", name)
+            for resource in resources:
                 discovered_resources.append(
                     McpResourceInfo(
                         server_name=name,
@@ -706,6 +807,7 @@ class McpClient:
             self._resources.extend(discovered_resources)
 
             self._connected.add(name)
+            self._catalog_revision += 1
             logger.info(
                 "Connected to MCP server '%s' (%s): %d tools, %d resources",
                 name,
@@ -723,9 +825,16 @@ class McpClient:
     def _disconnect_server(self, name: str) -> None:
         """Disconnect from a single server."""
         transport = self._transports.pop(name, None)
-        if transport:
-            transport.disconnect()
-        self._connected.discard(name)
+        try:
+            if transport:
+                transport.disconnect()
+        finally:
+            self._connected.discard(name)
+            self._tools = [tool for tool in self._tools if tool.server_name != name]
+            self._resources = [
+                resource for resource in self._resources if resource.server_name != name
+            ]
+            self._catalog_revision += 1
 
     def _rebuild_tool_list(self) -> None:
         """Rebuild the tool list from connected servers."""
@@ -815,6 +924,8 @@ def build_mcp_client(config: dict) -> McpClient:
                     command=command,
                     args=server_cfg.get("args", []),
                     env=server_cfg.get("env", {}),
+                    deferred=server_cfg.get("deferred", False),
+                    description=server_cfg.get("description", ""),
                 ),
             )
 
@@ -829,6 +940,8 @@ def build_mcp_client(config: dict) -> McpClient:
                     url=url,
                     headers=server_cfg.get("headers", {}),
                     timeout=server_cfg.get("timeout", 30.0),
+                    deferred=server_cfg.get("deferred", False),
+                    description=server_cfg.get("description", ""),
                 ),
             )
 
@@ -844,6 +957,8 @@ def build_mcp_client(config: dict) -> McpClient:
                     post_url=server_cfg.get("post_url", ""),
                     headers=server_cfg.get("headers", {}),
                     timeout=server_cfg.get("timeout", 30.0),
+                    deferred=server_cfg.get("deferred", False),
+                    description=server_cfg.get("description", ""),
                 ),
             )
 

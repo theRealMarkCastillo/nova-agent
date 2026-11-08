@@ -324,6 +324,14 @@ def create_observability(
 ) -> NoOpObservability | LangfuseObservability:
     settings = config.get("observability", {})
     if (
+        isinstance(settings, dict)
+        and settings.get("enabled")
+        and settings.get("provider") == "mlflow"
+    ):
+        from nova.mlflow_observability import create_mlflow_observability
+
+        return create_mlflow_observability(settings)
+    if (
         not isinstance(settings, dict)
         or not settings.get("enabled")
         or settings.get("provider", "langfuse") != "langfuse"

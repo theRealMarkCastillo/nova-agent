@@ -1,7 +1,6 @@
 """CLI entry point for Nova Agent."""
 
 import argparse
-import asyncio
 import getpass
 import os
 import subprocess
@@ -183,13 +182,6 @@ def cmd_ask(args):
         print(response)
     finally:
         agent.close()
-
-
-def cmd_acp(args):
-    """Run Nova as an ACP server over standard input and output."""
-    from nova.acp_server import run_acp_server
-
-    asyncio.run(run_acp_server(load_config()))
 
 
 def cmd_sessions(args):
@@ -442,10 +434,6 @@ def main():
     ask_parser.add_argument("question", help="The question to ask")
     ask_parser.set_defaults(func=cmd_ask)
 
-    # acp
-    acp_parser = subparsers.add_parser("acp", help="Run an ACP server over stdio")
-    acp_parser.set_defaults(func=cmd_acp)
-
     # sessions
     sessions_parser = subparsers.add_parser("sessions", help="List recent sessions")
     sessions_parser.add_argument("--limit", type=int, default=20, help="Max sessions to show")
@@ -481,8 +469,7 @@ def main():
     try:
         args.func(args)
     except KeyboardInterrupt:
-        stream = sys.stderr if args.command == "acp" else sys.stdout
-        print("\nInterrupted.", file=stream)
+        print("\nInterrupted.")
         sys.exit(130)
     except ConfigError as e:
         print(f"Configuration error: {e}", file=sys.stderr)

@@ -4,6 +4,7 @@ Provides skill_view, skills_list, and skill_manage tools for the agent
 to discover and use specialized knowledge.
 """
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -12,7 +13,6 @@ from typing import Any
 import yaml
 
 from nova.skills import (
-    build_skills_prompt,
     discover_skills,
     export_skill,
     load_skill_content,
@@ -24,10 +24,14 @@ logger = logging.getLogger(__name__)
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List all available skills with their names, categories, and descriptions.",
+    "description": "Search or page through available skills. Pass next_cursor as cursor to continue.",
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "query": {"type": "string", "description": "Filter names and descriptions."},
+            "cursor": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
         "required": [],
     },
 }
@@ -117,12 +121,43 @@ def _skills_list(args: dict[str, Any], **kwargs) -> str:
     """List all available skills."""
     config = kwargs.get("config", {})
     skills_dir = _get_skills_dir(config)
-    skills = discover_skills(skills_dir)
+    cursor = args.get("cursor", 0)
+    limit = args.get("limit", 20)
+    query = args.get("query", "")
+    if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= 50:
+        return "Error: cursor must be non-negative and limit must be between 1 and 50."
+    if not isinstance(query, str):
+        return "Error: query must be a string."
+    skills = discover_skills(skills_dir, max_count=None)
+    if query:
+        terms = query.casefold().split()
+        skills = [
+            skill
+            for skill in skills
+            if all(term in f"{skill['name']} {skill['description']}".casefold() for term in terms)
+        ]
 
     if not skills:
         return "No skills found. Create skills in ~/.nova/skills/."
 
-    return build_skills_prompt(skills)
+    page = skills[cursor : cursor + limit]
+    next_cursor = cursor + len(page) if cursor + len(page) < len(skills) else None
+    return json.dumps(
+        {
+            "skills": [
+                {
+                    "name": skill["name"],
+                    "description": skill.get("description", ""),
+                    "id": Path(skill.get("path", skill["name"])).parent.name
+                    if skill.get("path")
+                    else skill["name"],
+                }
+                for skill in page
+            ],
+            "total": len(skills),
+            "next_cursor": next_cursor,
+        }
+    )
 
 
 def _skill_view(args: dict[str, Any], **kwargs) -> str:

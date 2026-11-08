@@ -10,6 +10,7 @@ import copy
 import logging
 import re
 import sqlite3
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -24,7 +25,7 @@ from nova.hooks import (
     EVENT_SESSION_START,
     hooks,
 )
-from nova.mcp_client import McpToolInfo, build_mcp_client
+from nova.mcp_client import McpClient, McpToolInfo, build_mcp_client
 from nova.microcompact import compact_to_token_budget
 from nova.model_metadata import get_model_context_window, load_provider_metadata
 from nova.observability import create_observability
@@ -45,6 +46,7 @@ from nova.tokens import (
     estimate_tokens,
     estimate_total_request_tokens,
 )
+from nova.tool_catalog import DEFAULT_CORE, DISCOVERY_TOOL, ToolCatalog
 from nova.tool_executor import MCP_RESOURCE_TOOL, ToolExecutor
 from nova.tools.registry import discover_builtin_tools, registry
 from nova.wiki_memory import WikiMemory
@@ -144,6 +146,7 @@ class NovaAgent:
     ):
         self.config = copy.deepcopy(config) if config else load_config()
         self._prompt_mode = prompt_mode
+        self._offered_tool_names: set[str] | None = None
         self.session_id = session_id
         self.messages: list[dict[str, Any]] = []
         self._system_prompt: str | None = None
@@ -194,7 +197,12 @@ class NovaAgent:
             # Discover tools (pass config so delegation tool can be gated)
             # Must happen before _create_session so system prompt includes tool summaries
             discover_builtin_tools(self.config)
-            self.mcp_client.connect_all()
+            if isinstance(self.mcp_client, McpClient):
+                self.mcp_client.connect_all(
+                    include_deferred=not self.config.get("tool_catalog", {}).get("enabled", False)
+                )
+            else:
+                self.mcp_client.connect_all()
             self._refresh_mcp_tools()
 
             # Sub-agent depth tracking
@@ -245,22 +253,49 @@ class NovaAgent:
         return f"mcp__{server}__{name}"
 
     def _refresh_mcp_tools(self) -> None:
-        self._mcp_tools = {}
+        revision = getattr(self.mcp_client, "catalog_revision", None)
+        if type(revision) is int and revision == getattr(self, "_mcp_catalog_revision", None):
+            return
+        tools = {}
+        definitions = []
         for tool in self.mcp_client.list_tools():
             name = self._namespace_mcp_tool(tool)
-            if name not in self._mcp_tools:
-                self._mcp_tools[name] = tool
+            if name not in tools:
+                tools[name] = copy.deepcopy(tool)
+                definitions.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "description": tool.description or f"Call MCP tool {tool.name}",
+                            "parameters": copy.deepcopy(tool.input_schema)
+                            if isinstance(tool.input_schema, dict)
+                            else {},
+                        },
+                    }
+                )
+        self._mcp_tools = tools
+        self._mcp_definition_cache = definitions
+        self._mcp_catalog_revision = revision
 
     def _mcp_tool_info(self, name: str) -> McpToolInfo | None:
+        self._refresh_mcp_tools()
         return self._mcp_tools.get(name)
 
-    def _mcp_summary(self) -> str:
+    def _mcp_summary(self, tool_names: set[str] | None = None) -> str:
         lines = [
             f"- {name}: {tool.description.split(chr(10))[0][:100]}"
             for name, tool in sorted(self._mcp_tools.items())
+            if tool_names is None or name in tool_names
         ]
-        if self.mcp_client.list_resources() or self.mcp_client.connected_servers:
+        if (tool_names is None or MCP_RESOURCE_TOOL in tool_names) and (
+            self.mcp_client.list_resources() or self.mcp_client.connected_servers
+        ):
             lines.append("- mcp_read_resource: Read a discovered MCP resource")
+        if tool_names is not None and DISCOVERY_TOOL in tool_names:
+            lines.append(
+                "- discover_tools: Search the full catalog and activate tools for the next request; activation does not grant permission."
+            )
         return "\n".join(lines)
 
     def _create_session(self):
@@ -314,15 +349,17 @@ class NovaAgent:
         if self.wiki:
             wiki_content = self.wiki.format_for_prompt()
 
+        self._prompt_tool_definitions = self._get_tool_definitions()
+        tool_names = {
+            definition["function"]["name"] for definition in self._prompt_tool_definitions
+        }
         self._system_prompt = build_system_prompt(
             config=self.config,
             cwd=self.workspace,
             mode=resolved_mode,
             wiki_content=wiki_content,
-            extra_tool_summary=self._mcp_summary(),
-            tool_names={
-                definition["function"]["name"] for definition in self._builtin_tool_definitions()
-            },
+            extra_tool_summary=self._mcp_summary(tool_names),
+            tool_names=tool_names,
         )
 
     def _refresh_system_prompt(self, mode: str | None = None):
@@ -358,6 +395,7 @@ class NovaAgent:
         # Fire pre_llm_call hook
         hooks.emit(EVENT_PRE_LLM_CALL, messages=messages, tools=tools)
 
+        request_started = time.monotonic()
         llm_config = self.config["llm"]
         agent_config = self.config["agent"]
         retry_cfg = self.config.get("retry", {})
@@ -428,6 +466,9 @@ class NovaAgent:
             input_data=messages,
             output_data=response_data,
             usage=usage,
+            tool_count=len(tools or []),
+            schema_tokens=estimate_total_request_tokens([], tools=tools),
+            duration_ms=(time.monotonic() - request_started) * 1000,
         )
         reported_usage = response_data.get("usage")
         if isinstance(reported_usage, dict):
@@ -515,6 +556,7 @@ class NovaAgent:
                     raise
         finally:
             self._active_trace = None
+            self._offered_tool_names = None
 
     def _usable_context_tokens(self) -> int:
         """Provider tokens available for the request after reserving the reply."""
@@ -648,6 +690,11 @@ class NovaAgent:
                 logger.info("Agent interrupted before model request")
                 return "[Interrupted]"
             iteration += 1
+            tools = self._get_tool_definitions()
+            if tools != getattr(self, "_prompt_tool_definitions", None):
+                self._refresh_system_prompt()
+            self._offered_tool_names = {definition["function"]["name"] for definition in tools}
+            api_messages[0] = {"role": "system", "content": self._system_prompt or ""}
 
             # Keep requests below the model window without making another LLM call.
             api_messages, self.messages = self._compact_if_needed(api_messages, tools)
@@ -774,21 +821,11 @@ class NovaAgent:
             available.append(definition)
         return available
 
-    def _get_tool_definitions(self) -> list[dict[str, Any]]:
+    def _all_tool_definitions(self) -> list[dict[str, Any]]:
         """Return the tools available to this agent instance."""
+        self._refresh_mcp_tools()
         available = self._builtin_tool_definitions()
-        for name, tool in self._mcp_tools.items():
-            schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
-            available.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": tool.description or f"Call MCP tool {tool.name}",
-                        "parameters": schema,
-                    },
-                }
-            )
+        available.extend(copy.deepcopy(self._mcp_definition_cache))
         if self.mcp_client.list_resources() or self.mcp_client.connected_servers:
             available.append(
                 {
@@ -809,3 +846,36 @@ class NovaAgent:
                 }
             )
         return available
+
+    def _get_tool_definitions(self) -> list[dict[str, Any]]:
+        definitions = self._all_tool_definitions()
+        settings = self.config.get("tool_catalog", {})
+        if not settings.get("enabled", False):
+            return definitions
+        catalog = getattr(self, "_tool_catalog", None)
+        if catalog is None:
+            self._tool_catalog = ToolCatalog(
+                definitions,
+                max_tokens=settings.get("schema_max_tokens", 4096),
+                core_names=list(DEFAULT_CORE),
+            )
+        else:
+            catalog.update(definitions)
+        return self._tool_catalog.definitions()
+
+    def _discover_tools(
+        self, query: str, *, limit: int = 5, server: str | None = None
+    ) -> dict[str, Any]:
+        if server is not None and (not isinstance(server, str) or not server.strip()):
+            raise ValueError("server must be a non-empty configured name")
+        result = self._tool_catalog.discover(query, limit=limit)
+        if isinstance(self.mcp_client, McpClient):
+            if server is not None:
+                status = self.mcp_client.connect_server(server)
+                self._get_tool_definitions()
+                result = self._tool_catalog.discover(query, limit=limit)
+                result["server_connection"] = {"name": server, "status": status}
+            result.update(self.mcp_client.search_servers(query, limit=limit))
+        elif server is not None:
+            raise ValueError("This MCP client does not support deferred connections")
+        return result

@@ -1,6 +1,6 @@
 # Nova Agent — Documentation Index
 
-**Last Updated:** October 2026
+**Last Updated:** November 2026
 **Status:** ✅ Active
 **Type:** GUIDE (Documentation Index)
 **Maintainer:** [Eidolon Labs LLC](https://github.com/eidolonlabs-ai)
@@ -57,10 +57,12 @@
 | Document | Status | What It Covers |
 |----------|--------|----------------|
 | [SPEC-001-HARNESS_ENGINEERING](SPEC-001-HARNESS_ENGINEERING.md) | ✅ Active | Harness engineering: verification, acceptance states, unified traces, and optional Langfuse telemetry |
-| [SPEC-002-ACP_INTEGRATION](SPEC-002-ACP_INTEGRATION.md) | 📋 Planned | ACP editor parity: client MCP servers, session management, UX features, remote transports |
+| [SPEC-002-ACP_INTEGRATION](SPEC-002-ACP_INTEGRATION.md) | 🔴 Retired | Historical ACP proposal; replaced by CLI and SDK delegation |
 | [SPEC-003-NOVA_SDK_PUBLIC_API](SPEC-003-NOVA_SDK_PUBLIC_API.md) | 📋 Planned | Public API surface: NovaAgent, typed options/events, harness traces, stores, PyPI |
 | [SPEC-004-STASH_RECOVERY_PLAN](SPEC-004-STASH_RECOVERY_PLAN.md) | ✅ Implemented | Integrated updater and nested cache-usage fixes and verification evidence |
 | [SPEC-005-REVIEW_IMPROVEMENT_PLAN](SPEC-005-REVIEW_IMPROVEMENT_PLAN.md) | ✅ Implemented | October 2026 code/design review: findings, fixes, benchmarks, and remaining text-convention note |
+| [SPEC-006-CALLABLE_AGENT_PLAN](SPEC-006-CALLABLE_AGENT_PLAN.md) | 📋 Planned | Bounded agent delegation through a machine-readable CLI and Python SDK |
+| [SPEC-007-CATALOG_SCALING_AND_EVALS](SPEC-007-CATALOG_SCALING_AND_EVALS.md) | 📋 Planned | Catalog scaling review, regression cases, and local MLflow evaluation direction |
 
 ---
 
@@ -69,7 +71,7 @@
 | Document | Status | What It Covers |
 |----------|--------|----------------|
 | [REPORT-001-PROJECT_STATUS_2026-05-02](REPORT-001-PROJECT_STATUS_2026-05-02.md) | ✅ Active | Test coverage baseline, CI status, open work as of May 2026 |
-| [REPORT-002-ACP_IMPLEMENTATION_HANDOFF](REPORT-002-ACP_IMPLEMENTATION_HANDOFF.md) | ✅ Active | ACP implementation state, decisions, verification, and follow-on work |
+| [REPORT-002-ACP_IMPLEMENTATION_HANDOFF](REPORT-002-ACP_IMPLEMENTATION_HANDOFF.md) | 🔴 Retired | Historical ACP implementation record |
 
 ---
 
@@ -120,13 +122,13 @@ Skills live in `config/skills/` — copy to `~/.nova/skills/` to activate.
 |----------|-------|--------|
 | Guides (GUIDE-NNN) | 15 | ✅ All current |
 | ADRs (ADR-NNN) | 4 | ✅ All current |
-| Specs (SPEC-NNN) | 3 | ✅ All current |
+| Specs (SPEC-NNN) | 7 | 🟡 Implemented and planned specifications |
 | Research (RESEARCH-NNN) | 1 | ✅ Current |
 | Releases (RELEASE-NNN) | 1 | ✅ All current |
 | Reports (REPORT-NNN) | 2 | ✅ Current |
 | Starter skills | 16 | ✅ All current |
 | Root docs (README, CONTRIBUTING, SECURITY, AGENTS) | 4 | ✅ All current |
-| **Total** | **46** | ✅ Current |
+| **Total** | **50** | ✅ Current |
 
 **Supported doc type prefixes:** GUIDE · PRD · PERSONA · SPEC · ADR · RUN · RELEASE · STRATEGY · RESEARCH · GTM · REPORT
 
