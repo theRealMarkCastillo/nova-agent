@@ -1,6 +1,6 @@
 # SPEC-003: Nova SDK — Public API Surface
 
-**Status:** 📋 Planned
+**Status:** 🟡 Callable subset implemented; broader SDK planned
 **Last Updated:** November 2026
 **Type:** SPEC (Technical Specification)
 **Author:** Eidolon Labs LLC
@@ -18,6 +18,12 @@
 | Code changes | **None in this document** — contract and acceptance criteria only |
 
 ---
+
+## Implemented Callable Subset
+
+✅ The current root exports are `run_task`, `NovaOptions`, `NovaRunResult`, `NovaUsage`, `NovaError`, and `NovaEvent`, plus `__version__`. [SPEC-006](SPEC-006-CALLABLE_AGENT_PLAN.md) defines the implemented invocation contract; [Using Nova](GUIDE-009-USING_NOVA.md#calling-nova-from-another-agent) documents options, events, exit codes, permissions, limits, and session ownership. The same contract powers machine CLI modes.
+
+The broader API below remains a proposal. `NovaAgent`, stores, MCP configuration types, and configuration helpers have not been added to the root exports or frozen by this work. Real Codex-to-Nova acceptance against DeepSeek has passed the callable milestone's repair/resume/blocked/cancellation scenarios; this is bounded acceptance evidence, not a general live-model quality benchmark. Package publication remains pending.
 
 ## Problem
 

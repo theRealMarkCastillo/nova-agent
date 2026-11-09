@@ -1,5 +1,6 @@
 """Model metadata loaded from an OpenAI-compatible provider endpoint."""
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,7 +33,7 @@ def _value(item: Any, key: str, default: Any = None) -> Any:
 def _price(pricing: Any, name: str) -> float | None:
     try:
         value = float(_value(pricing, name))
-        return value * 1_000_000 if value >= 0 else None
+        return value * 1_000_000 if value >= 0 and math.isfinite(value * 1_000_000) else None
     except (TypeError, ValueError):
         return None
 
@@ -76,7 +77,7 @@ def load_provider_metadata(client: Any) -> dict[str, ModelMetadata]:
     return loaded
 
 
-def get_model_metadata(model: str) -> ModelMetadata | None:
+def get_model_metadata(model: str, *, exact: bool = False) -> ModelMetadata | None:
     """Return exact or partial-match metadata for a model identifier.
 
     Matching order: exact id, then the segment after the last ``/`` (provider
@@ -85,6 +86,8 @@ def get_model_metadata(model: str) -> ModelMetadata | None:
     """
     if model in _MODEL_METADATA:
         return _MODEL_METADATA[model]
+    if exact:
+        return None
 
     model_lower = model.lower()
     suffix = model_lower.rsplit("/", 1)[-1]

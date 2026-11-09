@@ -23,6 +23,13 @@ def test_usage_snapshot_defaults():
     assert snap.total_cost == 0.0
 
 
+@pytest.mark.parametrize("cost", [float("nan"), float("inf"), True])
+def test_cost_tracker_rejects_invalid_reported_cost(cost):
+    tracker = CostTracker()
+    with pytest.raises(ValueError):
+        tracker.add_usage(input_tokens=1, total_cost=cost)
+
+
 # ── CostTracker — Basic Usage ───────────────────────────────────────────────
 
 

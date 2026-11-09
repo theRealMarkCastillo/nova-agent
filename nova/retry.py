@@ -148,6 +148,7 @@ def retry_with_backoff(
     backoff_multiplier: float = 2.0,
     jitter: bool = True,
     retry_if: Callable[[Exception], bool] | None = None,
+    wait: Callable[[float], None] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Call a function with exponential backoff retry.
@@ -212,7 +213,10 @@ def retry_with_backoff(
                     error_msg[:200],
                     delay,
                 )
-                time.sleep(delay)
+                if wait is None:
+                    time.sleep(delay)
+                else:
+                    wait(delay)
             else:
                 logger.error(
                     "API call failed after %d retries (%s): %s",

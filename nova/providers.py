@@ -19,7 +19,7 @@ def build_client(llm_config: dict) -> Any:
     return OpenAI(
         api_key=llm_config["api_key"],
         base_url=llm_config["base_url"],
-        timeout=120.0,
+        timeout=llm_config.get("timeout_seconds", 120.0),
         max_retries=0,
     )
 
@@ -33,6 +33,8 @@ def completion_request_kwargs(payload: dict[str, Any], stream: bool = False) -> 
     }
     if payload.get("max_tokens"):
         request_kwargs["max_tokens"] = payload["max_tokens"]
+    if "timeout" in payload:
+        request_kwargs["timeout"] = payload["timeout"]
     if payload.get("tools"):
         request_kwargs["tools"] = payload["tools"]
         request_kwargs["tool_choice"] = "auto"
@@ -93,6 +95,10 @@ def stream_response(
     with client.chat.completions.create(**request_kwargs) as stream:  # type: ignore[call-overload]
         usage: dict[str, Any] | None = None
         for chunk in stream:
+            if interrupt_check is not None and interrupt_check():
+                logger.info("Stream interrupted by user")
+                interrupted = True
+                break
             # Most providers send usage on a trailing choice-less chunk; some
             # attach it to the final chunk that still carries a choice.
             chunk_usage = getattr(chunk, "usage", None)
@@ -106,11 +112,6 @@ def stream_response(
             if isinstance(chunk_finish_reason, str):
                 finish_reason = chunk_finish_reason
             delta = chunk.choices[0].delta
-
-            if interrupt_check is not None and interrupt_check():
-                logger.info("Stream interrupted by user")
-                interrupted = True
-                break
 
             if delta.content:
                 full_content += delta.content

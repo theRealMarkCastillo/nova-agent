@@ -4,12 +4,13 @@ Tracks cumulative input/output tokens and estimated dollar costs using
 provider model metadata and reported response usage when available.
 """
 
+import math
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-from nova.model_metadata import get_model_metadata
+from nova.model_metadata import ModelMetadata, get_model_metadata
 
 
 class UsageDelta(TypedDict, total=False):
@@ -76,6 +77,9 @@ class CostTracker:
     """
 
     model: str = ""
+    metadata_resolver: Callable[[str], ModelMetadata | None] | None = field(
+        default=None, repr=False, compare=False
+    )
     _usage: UsageSnapshot = field(default_factory=UsageSnapshot)
     _reported_total_cost: float | None = None
     # Sub-agents merge into their parent's tracker from worker threads.
@@ -101,8 +105,14 @@ class CostTracker:
         if input_tokens < 0 or output_tokens < 0 or cache_read_tokens < 0 or cache_write_tokens < 0:
             raise ValueError("token counts cannot be negative")
         for cost in (input_cost, output_cost, total_cost):
-            if cost is not None and cost < 0:
-                raise ValueError("costs cannot be negative")
+            if cost is None:
+                continue
+            try:
+                valid = type(cost) in (int, float) and cost >= 0 and math.isfinite(cost)
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise ValueError("costs must be nonnegative and finite")
 
         with self._lock:
             self._add_usage_locked(
@@ -127,7 +137,7 @@ class CostTracker:
         total_cost: float | None,
         usage_reported: bool,
     ) -> None:
-        metadata = get_model_metadata(self.model)
+        metadata = (self.metadata_resolver or get_model_metadata)(self.model)
         reported = total_cost is not None or (input_cost is not None and output_cost is not None)
         priced = reported or (
             metadata is not None
@@ -206,7 +216,7 @@ class CostTracker:
         self, input_tokens: int, output_tokens: int, cache_read_tokens: int, cache_write_tokens: int
     ) -> dict[str, float]:
         """Estimate dollar cost from token counts using model pricing."""
-        metadata = get_model_metadata(self.model)
+        metadata = (self.metadata_resolver or get_model_metadata)(self.model)
         input_price = metadata.input_price_per_million if metadata else None
         output_price = metadata.output_price_per_million if metadata else None
         cache_read_price = metadata.cache_read_price_per_million if metadata else None
@@ -286,7 +296,7 @@ def extract_usage_from_response(response_data: dict) -> UsageDelta:
         "cache_write_tokens": cache_write_tokens,
     }
 
-    if "cost" in usage:
+    if usage.get("cost") is not None:
         # OpenRouter reports `cost` for the complete request.
         result["input_cost"] = usage["cost"]
         result["output_cost"] = 0.0

@@ -3,8 +3,11 @@
 Stores conversation sessions with message history, system prompts, and metadata.
 """
 
+import fcntl
+import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import uuid
@@ -13,6 +16,10 @@ from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class SessionBusyError(RuntimeError):
+    pass
 
 
 class SessionStore:
@@ -85,6 +92,9 @@ class SessionStore:
                     ON sessions(updated_at);
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+            session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            if "workspace" not in session_columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN workspace TEXT")
             if "tool_call_id" not in columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
             if "reasoning_content" not in columns:
@@ -125,6 +135,7 @@ class SessionStore:
         model: str | None = None,
         system_prompt: str | None = None,
         title: str | None = None,
+        workspace: str | None = None,
     ) -> str:
         """Create a new session."""
         if session_id is None:
@@ -135,9 +146,9 @@ class SessionStore:
         now = datetime.now().isoformat()
         with self._connection() as conn:
             conn.execute(
-                "INSERT INTO sessions (session_id, created_at, updated_at, model, system_prompt, title, message_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, 0)",
-                (session_id, now, now, model, system_prompt, title),
+                "INSERT INTO sessions (session_id, created_at, updated_at, model, system_prompt, title, message_count, workspace) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+                (session_id, now, now, model, system_prompt, title, workspace),
             )
 
         logger.info("Created session %s", session_id)
@@ -256,7 +267,7 @@ class SessionStore:
         """Get session metadata."""
         with self._connection() as conn:
             cursor = conn.execute(
-                "SELECT session_id, created_at, updated_at, model, system_prompt, title, message_count "
+                "SELECT session_id, created_at, updated_at, model, system_prompt, title, message_count, workspace "
                 "FROM sessions WHERE session_id = ?",
                 (session_id,),
             )
@@ -272,7 +283,38 @@ class SessionStore:
                 "system_prompt": row[4],
                 "title": row[5],
                 "message_count": row[6],
+                "workspace": row[7],
             }
+
+    @staticmethod
+    def peek_session(db_path: Path, session_id: str) -> dict | None:
+        if not db_path.is_file():
+            return None
+        conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    @contextmanager
+    def writer(db_path: Path, session_id: str):
+        directory = db_path.parent / ".writers"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        name = hashlib.sha256(session_id.encode()).hexdigest() + ".lock"
+        fd = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise SessionBusyError("Session already has a writer") from error
+            yield
+        finally:
+            os.close(fd)
 
     def update_system_prompt(self, session_id: str, system_prompt: str):
         """Update the system prompt for a session."""

@@ -2,14 +2,19 @@
 
 import argparse
 import getpass
+import json
 import os
+import signal
 import subprocess
 import sys
+import threading
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
 from nova.agent import NovaAgent
 from nova.config import ensure_nova_home, load_config, set_model
+from nova.invocation import NovaError, NovaOptions, NovaRunResult, _StopInvocation, run_task
 from nova.model_metadata import get_model_context_window
 from nova.tokens import estimate_total_request_tokens
 
@@ -175,6 +180,25 @@ def cmd_chat(args):
 
 def cmd_ask(args):
     """Ask a one-shot question."""
+    if (
+        getattr(args, "output_format", "text") != "text"
+        or any(
+            getattr(args, key, None) is not None
+            for key in (
+                "prompt_file",
+                "workspace",
+                "session",
+                "model",
+                "config",
+                "max_iterations",
+                "max_total_tokens",
+                "max_cost_usd",
+                "timeout_seconds",
+            )
+        )
+        or getattr(args, "include_trace", False)
+    ):
+        return _cmd_ask_protocol(args)
     config = load_config()
     agent = NovaAgent(config=config, confirmation_callback=_confirm_tool)
     try:
@@ -182,6 +206,105 @@ def cmd_ask(args):
         print(response)
     finally:
         agent.close()
+
+
+def _cmd_ask_protocol(args: argparse.Namespace) -> int:
+    output_format = args.output_format
+    wire = sys.stdout
+    cancel = threading.Event()
+    previous_handlers = {}
+    last_sequence = 0
+    last_run_id = None
+
+    def write(value: dict) -> None:
+        wire.write(json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n")
+        wire.flush()
+
+    def on_event(event) -> None:
+        nonlocal last_sequence, last_run_id
+        last_sequence, last_run_id = event.sequence, event.run_id
+        write(event.to_dict())
+
+    def on_signal(signum, frame):
+        if not cancel.is_set():
+            cancel.set()
+            raise _StopInvocation("cancelled")
+
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[sig] = signal.signal(sig, on_signal)
+    try:
+        try:
+            question = args.question
+            if args.prompt_file is not None:
+                question = (
+                    sys.stdin.read()
+                    if args.prompt_file == "-"
+                    else Path(args.prompt_file).read_text(encoding="utf-8")
+                )
+            options = NovaOptions(
+                workspace=args.workspace or Path.cwd(),
+                config_path=args.config,
+                model=args.model,
+                session_id=args.session,
+                max_iterations=args.max_iterations if args.max_iterations is not None else 20,
+                max_total_tokens=args.max_total_tokens,
+                max_cost_usd=args.max_cost_usd,
+                timeout_seconds=args.timeout_seconds if args.timeout_seconds is not None else 300,
+                include_trace=args.include_trace,
+            )
+            with redirect_stdout(sys.stderr):
+                result = run_task(
+                    question,
+                    options=options,
+                    cancel_event=cancel,
+                    on_event=on_event if output_format == "jsonl" else None,
+                    confirm=_confirm_tool if output_format == "text" else None,
+                )
+        except _StopInvocation:
+            result = NovaRunResult(last_run_id, None, "", "cancelled", "cancelled")
+            if output_format == "jsonl":
+                from nova.invocation import RunFinished
+
+                on_event(
+                    RunFinished(run_id=result.run_id, sequence=last_sequence + 1, result=result)
+                )
+        except BrokenPipeError:
+            raise
+        except Exception as error:
+            code = (
+                "invalid_options" if isinstance(error, (OSError, ValueError)) else "internal_error"
+            )
+            result = NovaRunResult(
+                last_run_id,
+                None,
+                "",
+                "failed",
+                "error",
+                error=NovaError(code, "Invocation could not be completed."),
+            )
+            if output_format == "jsonl":
+                from nova.invocation import RunFinished
+
+                on_event(
+                    RunFinished(run_id=result.run_id, sequence=last_sequence + 1, result=result)
+                )
+        if output_format == "json":
+            write(result.to_dict())
+        elif output_format == "text":
+            print(result.output, file=wire)
+        if result.error is not None and result.error.code == "invalid_options":
+            return 2
+        return {"completed": 0, "failed": 1, "blocked": 3, "limit_reached": 4, "cancelled": 130}[
+            result.status
+        ]
+    except BrokenPipeError:
+        with open(os.devnull, "w") as sink:
+            os.dup2(sink.fileno(), wire.fileno())
+        return 1
+    finally:
+        for sig, previous in previous_handlers.items():
+            signal.signal(sig, previous)
 
 
 def cmd_sessions(args):
@@ -431,7 +554,20 @@ def main():
 
     # ask
     ask_parser = subparsers.add_parser("ask", help="Ask a one-shot question")
-    ask_parser.add_argument("question", help="The question to ask")
+    ask_parser.add_argument("question", nargs="?", help="The question to ask")
+    ask_parser.add_argument(
+        "--prompt-file", help="Read the task from a UTF-8 file or '-' for stdin"
+    )
+    ask_parser.add_argument("--output-format", choices=["text", "json", "jsonl"], default="text")
+    ask_parser.add_argument("--workspace", type=Path)
+    ask_parser.add_argument("--session")
+    ask_parser.add_argument("--model")
+    ask_parser.add_argument("--config", type=Path)
+    ask_parser.add_argument("--max-iterations", type=int)
+    ask_parser.add_argument("--max-total-tokens", type=int)
+    ask_parser.add_argument("--max-cost-usd", type=float)
+    ask_parser.add_argument("--timeout-seconds", type=float)
+    ask_parser.add_argument("--include-trace", action="store_true")
     ask_parser.set_defaults(func=cmd_ask)
 
     # sessions
@@ -459,6 +595,8 @@ def main():
     update_parser.set_defaults(func=cmd_update)
 
     args = parser.parse_args()
+    if args.command == "ask" and (args.question is None) == (args.prompt_file is None):
+        parser.error("supply exactly one question or --prompt-file")
 
     if not args.command:
         parser.print_help()
@@ -467,7 +605,9 @@ def main():
     from nova.config import ConfigError
 
     try:
-        args.func(args)
+        exit_code = args.func(args)
+        if isinstance(exit_code, int) and exit_code != 0:
+            sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(130)

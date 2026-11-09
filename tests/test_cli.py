@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -204,7 +205,7 @@ class TestCmdAsk:
         """Test that cmd_ask runs agent and prints response."""
         mock_agent = MagicMock()
         mock_agent.run.return_value = "Answer to the question"
-        args = MagicMock(question="What is 2+2?")
+        args = Namespace(question="What is 2+2?")
 
         with (
             patch("nova.cli.load_config") as mock_config,
@@ -222,7 +223,7 @@ class TestCmdAsk:
         mock_agent = MagicMock()
         mock_agent.run.return_value = "42"
         question = "What is the meaning of life, the universe, and everything?"
-        args = MagicMock(question=question)
+        args = Namespace(question=question)
 
         with patch("nova.cli.load_config"), patch("nova.cli.NovaAgent", return_value=mock_agent):
             cmd_ask(args)
@@ -233,7 +234,7 @@ class TestCmdAsk:
         """Test that cmd_ask propagates agent errors."""
         mock_agent = MagicMock()
         mock_agent.run.side_effect = RuntimeError("Agent failed")
-        args = MagicMock(question="What?")
+        args = Namespace(question="What?")
 
         with (
             patch("nova.cli.load_config"),
@@ -241,6 +242,28 @@ class TestCmdAsk:
             pytest.raises(RuntimeError),
         ):
             cmd_ask(args)
+
+    def test_machine_diagnostics_stay_on_stderr(self, capsys):
+        import json
+        import signal
+
+        from nova import NovaRunResult
+
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+        def run(*args, **kwargs):
+            print("diagnostic from dependency")
+            return NovaRunResult("run", "session", "done", "completed", "final_response")
+
+        with (
+            patch("nova.cli.run_task", side_effect=run),
+            patch.object(sys, "argv", ["nova", "ask", "task", "--output-format", "json"]),
+        ):
+            main()
+        output = capsys.readouterr()
+        assert json.loads(output.out)["output"] == "done"
+        assert "diagnostic from dependency" in output.err
+        assert {sig: signal.getsignal(sig) for sig in before} == before
 
 
 class TestCmdSessions:

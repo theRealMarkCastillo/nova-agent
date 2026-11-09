@@ -1,7 +1,7 @@
 # GUIDE-009: Using Nova Effectively
 
 **Status:** ✅ Active  
-**Last Updated:** October 2026
+**Last Updated:** November 2026
 **Type:** GUIDE (User Reference)
 
 > Practical patterns for getting consistent, high-quality results from Nova Agent day-to-day.
@@ -20,6 +20,65 @@
 | Sensitive environment | Set `permissions.mode: "ask"` |
 
 ---
+
+## Calling Nova From Another Agent
+
+Use the root Python API or the machine CLI when a caller needs an explicit outcome. Ordinary `nova ask "task"` keeps its existing text behavior. Supplying invocation flags in text mode opts into bounded execution with interactive confirmation.
+
+```bash
+nova ask "Inspect this workspace" --workspace /path/to/repo --output-format json --max-total-tokens 50000 --timeout-seconds 60
+nova ask --prompt-file - --workspace /path/to/repo --output-format jsonl < task.txt
+nova ask "Continue" --workspace /path/to/repo --session SESSION_ID --output-format json
+```
+
+Use `--config PATH` for an explicitly trusted configuration. Otherwise global configuration and safe workspace preferences are loaded. Invocation flags include `--model`, `--max-iterations` (default 20), `--max-total-tokens`, `--max-cost-usd`, `--timeout-seconds` (default 300), and `--include-trace`. A positional task and `--prompt-file PATH|-` are mutually exclusive. Files and stdin use Unicode text; prompt files are read as UTF-8.
+
+JSON mode writes one result object. JSONL mode writes ordered events: `run_started`, `message_delta`, `tool_started`, `tool_finished`, and one final `run_finished` containing the result. Pre-start failures may have only a terminal event and null IDs. Diagnostics go to stderr. Machine modes do not read approval input.
+
+| Exit code | Outcome |
+|-----------|---------|
+| 0 | Completed; check verification separately |
+| 1 | Failed, including unknown/busy sessions or unavailable usage |
+| 2 | Invalid task, options, or configuration; parser errors may have only stderr |
+| 3 | Blocked waiting for approval |
+| 4 | Token, cost, iteration, or time limit reached |
+| 130 | Cancelled by SIGINT or SIGTERM |
+
+The result includes `schema_version`, `run_id`, `session_id`, `output`, `status`, `stop_reason`, `verification_status`, `usage`, `error`, and nullable `trace`. `usage` reports per-invocation input/output/cache token counts, nullable `cost_usd`, `cost_source` (`reported`, `estimated`, or `unknown`), and `complete`. Error objects have a stable `code`, sanitized `message`, and `retryable` flag. Never infer status from output beginning with `Error:` or `[Interrupted]`. A completed model response can have failed verification.
+
+```python
+from pathlib import Path
+from nova import NovaOptions, run_task
+
+result = run_task(
+    "Inspect the failing test",
+    options=NovaOptions(
+        workspace=Path("/path/to/repo"),
+        max_total_tokens=50000,
+        timeout_seconds=60,
+    ),
+)
+print(result.to_dict())
+```
+
+A missing or rejected SDK confirmation stops with `blocked/permission_required`. Supply `confirm=lambda name, arguments: ...` only when the calling application can make that decision. Approval callbacks cannot override a policy denial. An explicit configured policy can allow tools without confirmation; machine mode does not elevate that policy. Caller callback exceptions propagate after owned resources are closed.
+
+For progress, pass `on_event=callback`. To cancel cooperatively, pass `cancel_event=threading.Event()` and set it from your application's cancellation path. The SDK installs no signal handlers. Avoid blocking callbacks: synchronous cancellation cannot forcibly terminate arbitrary Python code. CLI signal handling belongs to the CLI process and is restored after the invocation.
+
+Fresh invocations create fresh sessions. To resume, pass `session_id` in `NovaOptions` or `--session` with the same canonical workspace. Unknown IDs fail; old sessions without recorded workspace ownership cannot be attached through this API. A POSIX OS-backed lock rejects another writer with `session_busy` and releases on process exit, including a crash. A blocked invocation can be resumed after an explicit caller/configuration permission decision; approval is not persisted automatically.
+
+Token and cost limits admit requests using estimated prompt size plus reserved maximum output, shrinking the output allowance where possible. Parent and child calls share accounting and a provider-pricing snapshot. Required missing usage/pricing or malformed reports stop with `usage_unavailable`; missing pricing is never represented as a known zero. Retry waits and request/tool timeouts receive the remaining deadline. Provider tokenization and late reports can overshoot estimates: inspect observed usage, and do not treat these limits as a provider billing guarantee. Web-tool credits are outside the LLM USD limit.
+
+| Bounded capability | Status | Behavior |
+|--------------------|--------|----------|
+| Files, search, skill lookup | ✅ Available | Existing workspace and policy checks apply |
+| Terminal | ✅ Available | Own process group is terminated on interruption and after shell exit, including background members |
+| Delegation | ✅ Available | Runs synchronously with shared invocation accounting; a child timeout stops the bounded invocation |
+| Background task tools, MCP, HTTP/web, and other handlers | 📋 Lifecycle support pending | Unavailable in bounded mode with an explicit explanation; ordinary interactive use is unchanged |
+
+The terminal is not an OS security sandbox. Cleanup owns its process group; commands must not deliberately escape that group by daemonizing or creating a separate session. Blocking transport reads and third-party callbacks remain cooperative boundaries. Keep `include_trace=False` unless needed: an included trace can contain workspace text, tool arguments, and results. Default tool events omit arguments/results.
+
+Runnable callers are [the Python SDK example](../examples/call_nova.py) and [the subprocess example](../examples/call_nova_subprocess.py). The subprocess caller passes an argument list and parses JSON, avoiding shell interpolation of task text. Packaged-install validation uses a disposable local provider outside the checkout. Real Codex-to-Nova SDK acceptance against DeepSeek passed repair, session continuation, blocked approval, and cancellation; the real JSON CLI also passed blocked approval with closed stdin. [SPEC-006](SPEC-006-CALLABLE_AGENT_PLAN.md) records the evidence and limits. Claude-specific acceptance remains unproven because its CLI was not logged in.
 
 ## Writing Good Task Descriptions
 

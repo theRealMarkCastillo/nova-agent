@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 from nova.tasks import sanitize_environment
@@ -148,7 +149,20 @@ def execute_terminal(args: dict[str, Any], **kwargs: Any) -> str:
                 start_new_session=True,
             )
             try:
-                process.wait(timeout=timeout)
+                control = getattr(kwargs.get("agent"), "invocation_control", None)
+                if control is None:
+                    process.wait(timeout=timeout)
+                else:
+                    deadline = time.monotonic() + timeout
+                    while process.poll() is None:
+                        control.checkpoint()
+                        remaining = min(deadline - time.monotonic(), control.remaining())
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        try:
+                            process.wait(timeout=min(0.05, remaining))
+                        except subprocess.TimeoutExpired:
+                            continue
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(process.pid), 9)
@@ -156,6 +170,14 @@ def execute_terminal(args: dict[str, Any], **kwargs: Any) -> str:
                     process.kill()
                 process.wait()
                 return f"Error: Command timed out after {timeout}s."
+            finally:
+                if getattr(kwargs.get("agent"), "invocation_control", None) is not None:
+                    try:
+                        os.killpg(process.pid, 9)
+                    except ProcessLookupError:
+                        pass
+                    finally:
+                        process.wait()
             output_file.seek(0)
             raw = output_file.read(_MAX_OUTPUT_CHARS * 4)
             try:

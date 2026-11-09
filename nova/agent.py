@@ -13,6 +13,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ from nova.hooks import (
     hooks,
 )
 from nova.invocation import (
+    BOUNDED_TOOLS,
+    InvocationControl,
     MessageDelta,
     NovaError,
     NovaEvent,
@@ -38,6 +41,7 @@ from nova.invocation import (
     StopReason,
     _CallbackFailure,
     _EventEmitter,
+    _StopInvocation,
 )
 from nova.mcp_client import McpClient, McpToolInfo, build_mcp_client
 from nova.microcompact import compact_to_token_budget
@@ -157,8 +161,10 @@ class NovaAgent:
         confirmation_callback: Callable[[str, dict[str, Any]], bool] | None = None,
         workspace: Path | None = None,
         mcp_client: Any | None = None,
+        invocation_control: InvocationControl | None = None,
     ):
         self.config = copy.deepcopy(config) if config else load_config()
+        self.invocation_control = invocation_control
         self._prompt_mode = prompt_mode
         self._offered_tool_names: set[str] | None = None
         self.session_id = session_id
@@ -212,12 +218,17 @@ class NovaAgent:
             openai_client if openai_client is not None else build_client(self.config["llm"])
         )
         try:
-            load_provider_metadata(self.client)
+            metadata = load_provider_metadata(self.client)
+            if invocation_control is not None:
+                invocation_control.metadata.update(metadata)
 
             # Discover tools (pass config so delegation tool can be gated)
             # Must happen before _create_session so system prompt includes tool summaries
             discover_builtin_tools(self.config)
-            if isinstance(self.mcp_client, McpClient):
+            if invocation_control is not None:
+                invocation_control.check()
+                self._interrupt_check = invocation_control.interrupted
+            elif isinstance(self.mcp_client, McpClient):
                 self.mcp_client.connect_all(
                     include_deferred=not self.config.get("tool_catalog", {}).get("enabled", False)
                 )
@@ -239,7 +250,12 @@ class NovaAgent:
             cost_cfg = self.config.get("cost_tracking", {})
             self.cost_tracker: CostTracker | None = None
             if cost_cfg.get("enabled", True):
-                self.cost_tracker = CostTracker(model=self.config["llm"]["model"])
+                self.cost_tracker = CostTracker(
+                    model=self.config["llm"]["model"],
+                    metadata_resolver=invocation_control.metadata.get
+                    if invocation_control
+                    else None,
+                )
             self.observability = create_observability(self.config)
 
             # Create or load session (tools discovered above, so _build_system_prompt
@@ -251,20 +267,32 @@ class NovaAgent:
 
             # Fire session_start hook
             hooks.emit(EVENT_SESSION_START, session_id=self.session_id, config=self.config)
-        except Exception:
+        except BaseException:
             # Clean up HTTP client if init fails after creating it
-            self.close()
+            try:
+                self.close()
+            except Exception:
+                logger.exception("Cleanup failed during agent initialization")
             raise
 
     def close(self) -> None:
         """Close the HTTP client and release resources."""
+        error = None
+        closers = []
         observer = getattr(self, "observability", None)
         if observer is not None:
-            observer.shutdown()
+            closers.append(observer.shutdown)
         if self._owns_client and hasattr(self.client, "close"):
-            self.client.close()
+            closers.append(self.client.close)
         if getattr(self, "_owns_mcp_client", False):
-            self.mcp_client.disconnect_all()
+            closers.append(self.mcp_client.disconnect_all)
+        for close in closers:
+            try:
+                close()
+            except Exception as exc:
+                error = error or exc
+        if error is not None:
+            raise error
 
     @staticmethod
     def _namespace_mcp_tool(tool: McpToolInfo) -> str:
@@ -322,6 +350,7 @@ class NovaAgent:
         """Create a new session."""
         self.session_id = self.session_store.create_session(
             model=self.config["llm"]["model"],
+            workspace=str(self.workspace),
         )
         self._build_system_prompt()
         self.session_store.update_system_prompt(self.session_id, self._system_prompt or "")
@@ -334,7 +363,9 @@ class NovaAgent:
 
         info = self.session_store.get_session_info(self.session_id)
         if info:
-            if info.get("model"):
+            if info.get("model") and not (
+                self.invocation_control and self.invocation_control.options.model
+            ):
                 set_model(self.config, info["model"])
             # Load recent messages only — respect conversation turn limit
             turn_limit = self.config["budgets"].get("conversation_turn_limit", 15)
@@ -443,12 +474,27 @@ class NovaAgent:
         max_delay = retry_cfg.get("max_delay", 60.0)
 
         def track_attempt(request: Callable[[], dict]) -> dict:
+            control = self.invocation_control
+            reservation = None
+            if control is not None:
+                reservation = control.reserve(payload)
+                payload["timeout"] = control.remaining()
             try:
-                return request()
+                response = request()
             except BaseException:
                 if self.cost_tracker:
                     self.cost_tracker.add_usage(usage_reported=False)
+                if control is not None:
+                    control.record(llm_config["model"], None)
+                    control.check()
                 raise
+            else:
+                if control is not None:
+                    control.record(llm_config["model"], response)
+                return response
+            finally:
+                if control is not None and reservation is not None:
+                    control.release(reservation)
 
         if stream:
             stream_output_started = False
@@ -475,6 +521,7 @@ class NovaAgent:
                 base_delay=base_delay,
                 max_delay=max_delay,
                 retry_if=lambda _error: not stream_output_started,
+                wait=self.invocation_control.wait if self.invocation_control else None,
             )
         else:
 
@@ -487,8 +534,17 @@ class NovaAgent:
                 max_retries=max_retries,
                 base_delay=base_delay,
                 max_delay=max_delay,
+                wait=self.invocation_control.wait if self.invocation_control else None,
             )
 
+        if self.invocation_control is not None:
+            try:
+                self.invocation_control.checkpoint()
+            except _StopInvocation:
+                content = response_data.get("choices", [{}])[0].get("message", {}).get("content")
+                if not stream and content and self._partial_output is not None:
+                    self._partial_output.append(content)
+                raise
         usage = extract_usage_from_response(response_data)
         self.observability.llm(
             llm_config["model"],
@@ -575,9 +631,18 @@ class NovaAgent:
         stream: bool = True,
         stream_callback: Callable[[str], None] | None = None,
     ) -> str:
-        return self._execute_run(
-            user_message, stream=stream, stream_callback=stream_callback, raise_errors=True
-        ).output
+        with self._writer():
+            return self._execute_run(
+                user_message, stream=stream, stream_callback=stream_callback, raise_errors=True
+            ).output
+
+    def _writer(self) -> AbstractContextManager:
+        if (
+            self.invocation_control is not None
+            and self.session_id in self.invocation_control.locked_sessions
+        ):
+            return nullcontext()
+        return self.session_store.writer(self.session_store.db_path, self.session_id or "")
 
     def run_result(
         self,
@@ -587,12 +652,13 @@ class NovaAgent:
         on_event: Callable[[NovaEvent], None] | None = None,
         include_trace: bool = False,
     ) -> NovaRunResult:
-        return self._execute_run(
-            user_message,
-            stream=stream,
-            on_event=on_event,
-            include_trace=include_trace,
-        )
+        with self._writer():
+            return self._execute_run(
+                user_message,
+                stream=stream,
+                on_event=on_event,
+                include_trace=include_trace,
+            )
 
     def _execute_run(
         self,
@@ -659,6 +725,8 @@ class NovaAgent:
                     else "unknown",
                     complete=not missing,
                 )
+            if self.invocation_control is not None:
+                usage = self.invocation_control.usage()
             result = NovaRunResult(
                 run_id=run_id,
                 session_id=self.session_id,
@@ -684,6 +752,9 @@ class NovaAgent:
                     self.last_run_trace = trace.finish(status="inconclusive")
                     if isinstance(exc, _CallbackFailure):
                         raise
+                    if isinstance(exc, _StopInvocation):
+                        self._stop_reason = exc.reason
+                        return finish("".join(partial_output), error=exc.error)
                     self._stop_reason = (
                         "cancelled" if isinstance(exc, KeyboardInterrupt) else "error"
                     )
@@ -950,7 +1021,15 @@ class NovaAgent:
 
             # Execute tool calls — parallelize independent calls
             tool_result_max_tokens = self.config["budgets"].get("tool_result_max_tokens", 3000)
-            results = self.tool_executor.run_batch(tool_calls)
+            try:
+                results = self.tool_executor.run_batch(tool_calls)
+            except BaseException:
+                for tool_call in tool_calls:
+                    if tool_call.get("id"):
+                        self._append_tool_result(
+                            tool_call["id"], "Tool call interrupted before completion."
+                        )
+                raise
 
             for tool_call, result in zip(tool_calls, results, strict=True):
                 content = result.content
@@ -1002,6 +1081,12 @@ class NovaAgent:
             if name == "delegate_task" and (not delegation_enabled or depth >= max_depth):
                 continue
             available.append(definition)
+        if self.invocation_control is not None:
+            available = [
+                definition
+                for definition in available
+                if definition["function"]["name"] in BOUNDED_TOOLS
+            ]
         return available
 
     def _all_tool_definitions(self) -> list[dict[str, Any]]:
@@ -1054,6 +1139,13 @@ class NovaAgent:
         result = self._tool_catalog.discover(query, limit=limit)
         if isinstance(self.mcp_client, McpClient):
             if server is not None:
+                if self.invocation_control is not None:
+                    result["server_connection"] = {
+                        "name": server,
+                        "status": "unavailable",
+                        "reason": "MCP lifecycle is not supported in bounded invocations.",
+                    }
+                    return result
                 status = self.mcp_client.connect_server(server)
                 self._get_tool_definitions()
                 result = self._tool_catalog.discover(query, limit=limit)

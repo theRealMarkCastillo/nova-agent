@@ -18,10 +18,12 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from contextlib import ExitStack
 from threading import Event
 from typing import Any
 
 from nova.config import set_model
+from nova.invocation import InvocationControl, _CallbackFailure
 from nova.providers import build_client
 from nova.tools.registry import registry
 
@@ -155,6 +157,8 @@ def _run_subagent(
     logger.info("%s spawning at depth=%d, timeout=%ds", log_prefix, depth, timeout_seconds)
     start_time = time.monotonic()
     subagent = None  # initialize before try so except block can safely reference it
+    raw_control = getattr(parent_agent, "invocation_control", None)
+    control = raw_control if isinstance(raw_control, InvocationControl) else None
 
     # Build sub-agent config
     delegation_cfg = parent_agent.config.get("delegation", {})
@@ -168,6 +172,8 @@ def _run_subagent(
         model=model,
         max_iterations=max_iterations,
     )
+    if control is not None:
+        subagent_config["llm"]["timeout_seconds"] = min(120, control.remaining())
 
     # Build initial messages based on context mode
     if context_mode == "fork" and parent_agent.messages:
@@ -182,8 +188,25 @@ def _run_subagent(
     try:
         llm_cfg = subagent_config["llm"]
         subagent_openai_client = build_client(llm_cfg)
-        with subagent_openai_client:
+        with ExitStack() as lifetime:
+            lifetime.enter_context(subagent_openai_client)
+            session_id = None
+            if control is not None:
+                session_id = str(uuid.uuid4())
+                lifetime.enter_context(
+                    parent_agent.session_store.writer(
+                        parent_agent.session_store.db_path, session_id
+                    )
+                )
+                control.locked_sessions.add(session_id)
+                lifetime.callback(control.locked_sessions.discard, session_id)
+                parent_agent.session_store.create_session(
+                    session_id=session_id,
+                    model=llm_cfg["model"],
+                    workspace=str(parent_agent.workspace),
+                )
             subagent = NovaAgent(
+                session_id=session_id,
                 config=subagent_config,
                 openai_client=subagent_openai_client,
                 session_store=parent_agent.session_store,
@@ -192,18 +215,26 @@ def _run_subagent(
                 confirmation_callback=_cancellable_confirmation(parent_agent, cancel_event),
                 mcp_client=parent_agent.mcp_client,
                 workspace=parent_agent.workspace,
+                invocation_control=control,
             )
 
             # Inject prefill messages if forking
             if prefill_messages:
                 subagent.messages = prefill_messages
 
-            if cancel_event is not None:
+            if cancel_event is not None and control is None:
                 deadline = start_time + timeout_seconds
                 subagent._interrupt_check = lambda: (
                     cancel_event.is_set() or time.monotonic() >= deadline
                 )
-            result = subagent.run(task, stream=False)
+            if control is not None:
+                outcome = subagent.run_result(task, stream=False)
+                control.checkpoint()
+                if outcome.status != "completed":
+                    control.halt(outcome.stop_reason, outcome.error)
+                result = outcome.output
+            else:
+                result = subagent.run(task, stream=False)
 
         elapsed = time.monotonic() - start_time
         # Count messages to estimate iterations (each tool round = 2 messages: assistant + tool)
@@ -226,6 +257,8 @@ def _run_subagent(
         }
 
     except Exception as e:
+        if control is not None and control.callback_error is not None:
+            raise _CallbackFailure(control.callback_error) from e
         elapsed = time.monotonic() - start_time
         logger.error("%s failed after %.1fs: %s", log_prefix, elapsed, e)
 
@@ -296,6 +329,18 @@ def _delegate_task(args: dict[str, Any], **kwargs) -> str:
     # must still disable a dispatch that was already registered.
     if agent.config.get("delegation", {}).get("enabled", True) is False:
         return json.dumps({"success": False, "error": "Delegation is disabled."})
+
+    control = getattr(agent, "invocation_control", None)
+    if isinstance(control, InvocationControl):
+        control.checkpoint()
+        previous_deadline = control.deadline
+        control.deadline = min(previous_deadline, time.monotonic() + timeout_seconds)
+        try:
+            return json.dumps(
+                _run_subagent(task, agent, label, model, timeout_seconds, context_mode), indent=2
+            )
+        finally:
+            control.deadline = previous_deadline
 
     # Run sub-agent in worker thread with hard timeout
     executor_context = ThreadPoolExecutor(max_workers=1)

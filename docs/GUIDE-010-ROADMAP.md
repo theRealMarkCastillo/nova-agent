@@ -4,7 +4,7 @@
 **Last Updated:** November 2026
 **Type:** GUIDE (Developer Reference)
 
-Nova is release-ready. The roadmap now tracks priorities rather than fixed calendar phases so implementation can follow product value and integration readiness.
+Nova has a functional CLI and core engine. The callable-agent milestone has passed automated, installed-wheel, and real Codex-to-Nova acceptance against DeepSeek. Implementation is maintained directly on `main`. The roadmap tracks priorities rather than fixed calendar phases.
 
 ## Current State
 
@@ -15,11 +15,11 @@ Nova is release-ready. The roadmap now tracks priorities rather than fixed calen
 - ✅ MCP client support for stdio, HTTP, and SSE transports
 - ✅ Firecrawl integration with credit-aware confirmation, bounded results, path safety, and untrusted-content labeling
 - ✅ Security and reliability hardening across MCP, web tools, sessions, context handling, background tasks, Git, and wiki memory
-- ✅ Release validation: 1169 tests passing, 83.72% coverage, Ruff clean, and mypy clean
+- ✅ Automated validation passes; run the current suite for counts and coverage. See SPEC-006 for callable-agent verification evidence.
 
 ## Now: Release Readiness ✅
 
-The current implementation is ready for release. Remaining work in this bucket is release execution rather than a feature gap:
+Core release preparation and the callable-agent live acceptance gate in SPEC-006 are complete. Package publishing remains a separate action:
 
 - ✅ Validate installation, configuration examples, supported Python versions, and CI gates
 - ✅ Verify security boundaries and secret handling
@@ -45,14 +45,15 @@ Expand integrations without weakening safety or observability:
 - 📋 Additional Firecrawl workflows and usage controls based on real release feedback
 - 📋 Integration tests for web and MCP failures, timeouts, malformed responses, and provider limits
 
-## Next: Callable Agent 📋
+## Current: Callable Agent ✅
 
 Prioritize delegation from another coding agent or application through the CLI and Python SDK. Follow [SPEC-006](SPEC-006-CALLABLE_AGENT_PLAN.md):
 
-- 📋 Shared typed run results and progress events
-- 📋 Noninteractive JSON/JSONL CLI output
-- 📋 Explicit permissions, budgets, cancellation, and session ownership
-- 📋 Public Python invocation API and real calling-agent validation
+- ✅ Shared typed run results and progress events
+- ✅ Noninteractive JSON/JSONL CLI output
+- ✅ Explicit permissions, budget admission, cooperative cancellation, and session ownership
+- ✅ Public Python invocation API, caller examples, and local protocol/packaged-install validation
+- ✅ Real Codex-to-Nova task, resume, blocked-operation, and cancellation acceptance against DeepSeek; JSON CLI blocked-approval check also passed
 
 ACP and IDE integration have been retired; the shared engine capabilities remain.
 

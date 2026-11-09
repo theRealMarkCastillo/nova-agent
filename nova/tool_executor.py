@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from nova.context import label_external_content
 from nova.harness import VerificationResult
 from nova.hooks import EVENT_POST_TOOL_CALL, EVENT_PRE_TOOL_CALL, hooks
-from nova.invocation import ToolFinished, ToolStarted
+from nova.invocation import BOUNDED_TOOLS, ToolFinished, ToolStarted
 from nova.mcp_client import McpToolInfo
 from nova.observability import redact
 from nova.permissions import PermissionResult, has_untrusted_output, is_egress_tool
@@ -199,6 +199,14 @@ class ToolExecutor:
             return call.parse_error, 0
         name = call.name
         arguments = call.arguments or {}
+        control = self._agent.invocation_control
+        if control is not None:
+            control.checkpoint()
+            if name not in BOUNDED_TOOLS:
+                return ToolResult.failed(
+                    f"Error: Tool '{name}' is unavailable in bounded invocations until its lifecycle supports deadlines and cleanup.",
+                    "bounded_tool_unavailable",
+                ), 0
         if self._interrupted():
             return ToolResult.interrupted(), 0
 
@@ -376,7 +384,8 @@ class ToolExecutor:
         raw = function.get("arguments", "{}")
         try:
             arguments = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
+            json.dumps(arguments, allow_nan=False)
+        except (TypeError, ValueError):
             error = ToolResult.failed(
                 f"Error: Invalid JSON arguments: {redact(raw)}", "invalid_arguments"
             )
@@ -412,6 +421,8 @@ class ToolExecutor:
         return arguments
 
     def _can_run_in_parallel(self, tool_call: dict) -> bool:
+        if self._agent.invocation_control is not None:
+            return False
         name = tool_call.get("function", {}).get("name", "")
         entry = registry.get_tool(name)
         read_only = (entry is not None and entry.is_read_only) or name == MCP_RESOURCE_TOOL

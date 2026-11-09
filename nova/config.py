@@ -334,7 +334,9 @@ def _warn_unknown_keys(user_config: dict[str, Any], source: str) -> None:
         logger.warning("Unknown config key '%s' in %s (typo?)", key, source)
 
 
-def load_config(config_path: Path | None = None) -> dict[str, Any]:
+def load_config(
+    config_path: Path | None = None, *, workspace: Path | None = None
+) -> dict[str, Any]:
     """Load configuration from YAML files, falling back to defaults.
 
     Config is loaded in layers (later layers override earlier ones):
@@ -365,7 +367,7 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     # Local config is supported for project preferences, but an untrusted
     # repository must not be able to redirect credentials or tool execution.
     is_automatic_local_config = config_path is None
-    resolved_config_path = config_path or (Path.cwd() / "config.yaml")
+    resolved_config_path = config_path or ((workspace or Path.cwd()) / "config.yaml")
 
     if resolved_config_path.exists():
         with open(resolved_config_path, encoding="utf-8") as f:
