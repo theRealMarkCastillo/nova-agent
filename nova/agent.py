@@ -13,6 +13,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,19 @@ from nova.hooks import (
     EVENT_PRE_LLM_CALL,
     EVENT_SESSION_START,
     hooks,
+)
+from nova.invocation import (
+    MessageDelta,
+    NovaError,
+    NovaEvent,
+    NovaRunResult,
+    NovaUsage,
+    RunFinished,
+    RunStarted,
+    RunStatus,
+    StopReason,
+    _CallbackFailure,
+    _EventEmitter,
 )
 from nova.mcp_client import McpClient, McpToolInfo, build_mcp_client
 from nova.microcompact import compact_to_token_budget
@@ -40,7 +54,7 @@ from nova.providers import (
     chat_completion,
     stream_response,
 )
-from nova.retry import ErrorType, classify_error, retry_with_backoff
+from nova.retry import ErrorType, classify_error, classify_exception, retry_with_backoff
 from nova.session import SessionStore
 from nova.tokens import (
     estimate_tokens,
@@ -159,6 +173,12 @@ class NovaAgent:
         self.mcp_client = mcp_client if mcp_client is not None else build_mcp_client(self.config)
         self._mcp_tools: dict[str, McpToolInfo] = {}
         self.last_run_trace: Any = None
+        self.last_run_result: NovaRunResult | None = None
+        self._active_events: _EventEmitter | None = None
+        self._stop_reason: StopReason = "final_response"
+        self._run_error_code = "internal_error"
+        self._partial_output: list[str] | None = None
+        self._response_output_started = False
         self._active_trace: HarnessTrace | None = None
         # Provider tokens per locally estimated token, from the last response.
         self._token_calibration = 1.0
@@ -422,27 +442,35 @@ class NovaAgent:
         base_delay = retry_cfg.get("base_delay", 1.0)
         max_delay = retry_cfg.get("max_delay", 60.0)
 
+        def track_attempt(request: Callable[[], dict]) -> dict:
+            try:
+                return request()
+            except BaseException:
+                if self.cost_tracker:
+                    self.cost_tracker.add_usage(usage_reported=False)
+                raise
+
         if stream:
             stream_output_started = False
 
             def _stream_callback(text: str) -> None:
                 nonlocal stream_output_started
                 stream_output_started = True
+                self._response_output_started = True
                 if stream_callback:
                     stream_callback(text)
 
             def _reasoning_callback(text: str) -> None:
                 nonlocal stream_output_started
                 stream_output_started = True
+                self._response_output_started = True
                 reasoning_callback = getattr(self, "_reasoning_callback", None)
                 if reasoning_callback:
                     reasoning_callback(text)
 
             response_data: dict = retry_with_backoff(
-                self._stream_response,
-                payload,
-                _stream_callback,
-                _reasoning_callback,
+                track_attempt,
+                lambda: self._stream_response(payload, _stream_callback, _reasoning_callback),
                 max_retries=max_retries,
                 base_delay=base_delay,
                 max_delay=max_delay,
@@ -454,6 +482,7 @@ class NovaAgent:
                 return chat_completion(self.client, payload)
 
             response_data = retry_with_backoff(
+                track_attempt,
                 _do_post,
                 max_retries=max_retries,
                 base_delay=base_delay,
@@ -476,7 +505,14 @@ class NovaAgent:
 
         # Track cost from response
         if self.cost_tracker:
-            self.cost_tracker.add_usage(**usage)
+            complete_usage = isinstance(reported_usage, dict) and (
+                type(reported_usage.get("prompt_tokens", reported_usage.get("input_tokens"))) is int
+                and type(
+                    reported_usage.get("completion_tokens", reported_usage.get("output_tokens"))
+                )
+                is int
+            )
+            self.cost_tracker.add_usage(**usage, usage_reported=complete_usage)
 
         # Fire post_llm_call hook
         hooks.emit(EVENT_POST_LLM_CALL, response=response_data)
@@ -539,23 +575,146 @@ class NovaAgent:
         stream: bool = True,
         stream_callback: Callable[[str], None] | None = None,
     ) -> str:
+        return self._execute_run(
+            user_message, stream=stream, stream_callback=stream_callback, raise_errors=True
+        ).output
+
+    def run_result(
+        self,
+        user_message: str,
+        *,
+        stream: bool = True,
+        on_event: Callable[[NovaEvent], None] | None = None,
+        include_trace: bool = False,
+    ) -> NovaRunResult:
+        return self._execute_run(
+            user_message,
+            stream=stream,
+            on_event=on_event,
+            include_trace=include_trace,
+        )
+
+    def _execute_run(
+        self,
+        user_message: str,
+        *,
+        stream: bool,
+        stream_callback: Callable[[str], None] | None = None,
+        on_event: Callable[[NovaEvent], None] | None = None,
+        include_trace: bool = False,
+        raise_errors: bool = False,
+    ) -> NovaRunResult:
+        if self._active_trace is not None:
+            raise RuntimeError("This agent already has an active run")
         run_id = str(uuid.uuid4())
         trace = HarnessTrace(run_id, user_message)
+        before = self.cost_tracker.total if self.cost_tracker else None
         self._active_trace = trace
+        emitter = _EventEmitter(run_id, on_event)
+        self._active_events = emitter
+        self._stop_reason = "final_response"
+        self._run_error_code = "internal_error"
+        self.last_run_result = None
+        partial_output: list[str] = []
+        self._partial_output = partial_output
+
+        def on_delta(text: str) -> None:
+            self._response_output_started = True
+            partial_output.append(text)
+            emitter.emit(MessageDelta, delta=text)
+            if stream_callback:
+                stream_callback(text)
+
+        def finish(output: str, *, error: NovaError | None = None) -> NovaRunResult:
+            reason = self._stop_reason
+            status: RunStatus = "completed"
+            if reason == "error":
+                status = "failed"
+            elif reason == "cancelled":
+                status = "cancelled"
+            elif reason == "permission_required":
+                status = "blocked"
+            elif reason != "final_response":
+                status = "limit_reached"
+            usage = NovaUsage(complete=False)
+            if self.cost_tracker and before is not None:
+                after = self.cost_tracker.total
+                missing = after.missing_usage_count > before.missing_usage_count or (
+                    error is not None and error.code == "provider_error"
+                )
+                unknown = after.unknown_cost_count > before.unknown_cost_count
+                estimated = after.estimated_cost_count > before.estimated_cost_count
+                reported = after.reported_cost_count > before.reported_cost_count
+                known = not missing and not unknown and (estimated or reported)
+                usage = NovaUsage(
+                    input_tokens=after.input_tokens - before.input_tokens,
+                    output_tokens=after.output_tokens - before.output_tokens,
+                    cache_read_tokens=after.cache_read_tokens - before.cache_read_tokens,
+                    cache_write_tokens=after.cache_write_tokens - before.cache_write_tokens,
+                    cost_usd=after.accounted_cost - before.accounted_cost if known else None,
+                    cost_source="estimated"
+                    if known and estimated
+                    else "reported"
+                    if known
+                    else "unknown",
+                    complete=not missing,
+                )
+            result = NovaRunResult(
+                run_id=run_id,
+                session_id=self.session_id,
+                output=output,
+                status=status,
+                stop_reason=reason,
+                verification_status=trace.run.status,
+                usage=usage,
+                error=error,
+                trace=asdict(trace.run) if include_trace else None,
+            )
+            self.last_run_result = result
+            emitter.emit(RunFinished, result=result)
+            return result
+
         try:
             with self.observability.run(run_id, user_message, session_id=self.session_id):
                 try:
-                    result = self._run(user_message, stream=stream, stream_callback=stream_callback)
-                    status = derive_run_status(trace.run, has_output=bool(result))
-                    self.observability.finish_run(status=status, output=result)
-                    self.last_run_trace = trace.finish(status=status, output=result)
-                    return result
+                    emitter.emit(RunStarted, session_id=self.session_id)
+                    output = self._run(user_message, stream=stream, stream_callback=on_delta)
                 except BaseException as exc:
                     self.observability.finish_run(status="inconclusive", error=exc)
                     self.last_run_trace = trace.finish(status="inconclusive")
-                    raise
+                    if isinstance(exc, _CallbackFailure):
+                        raise
+                    self._stop_reason = (
+                        "cancelled" if isinstance(exc, KeyboardInterrupt) else "error"
+                    )
+                    result = finish(
+                        "".join(partial_output),
+                        error=NovaError(
+                            self._run_error_code,
+                            "Nova could not complete the run.",
+                            retryable=self._run_error_code == "provider_error"
+                            and isinstance(exc, Exception)
+                            and classify_exception(exc)
+                            in {
+                                ErrorType.RETRYABLE,
+                                ErrorType.API_TIMEOUT,
+                                ErrorType.CONNECTION_TIMEOUT,
+                            },
+                        ),
+                    )
+                    if raise_errors or not isinstance(exc, Exception):
+                        raise
+                    return result
+                status = derive_run_status(trace.run, has_output=bool(output))
+                self.observability.finish_run(status=status, output=output)
+                self.last_run_trace = trace.finish(status=status, output=output)
+                return finish(output)
+        except _CallbackFailure as exc:
+            raise exc.error from None
         finally:
             self._active_trace = None
+            self._active_events = None
+            self._partial_output = None
             self._offered_tool_names = None
 
     def _usable_context_tokens(self) -> int:
@@ -688,6 +847,7 @@ class NovaAgent:
         while iteration < max_iterations:
             if _interrupt_check is not None and _interrupt_check():
                 logger.info("Agent interrupted before model request")
+                self._stop_reason = "cancelled"
                 return "[Interrupted]"
             iteration += 1
             tools = self._get_tool_definitions()
@@ -701,6 +861,7 @@ class NovaAgent:
 
             # Call LLM. If the provider rejects the request as too long despite
             # our estimate, compact aggressively and retry once before failing.
+            self._response_output_started = False
             try:
                 response = self._call_llm(
                     api_messages,
@@ -709,22 +870,32 @@ class NovaAgent:
                     stream_callback=stream_callback,
                 )
             except Exception as exc:
-                if classify_error(message=str(exc)) != ErrorType.CONTEXT_OVERFLOW:
+                if (
+                    self._response_output_started
+                    or classify_error(message=str(exc)) != ErrorType.CONTEXT_OVERFLOW
+                ):
+                    self._run_error_code = "provider_error"
                     raise
                 logger.warning("Provider reported context overflow; compacting and retrying once")
                 api_messages, self.messages = self._compact_if_needed(
                     api_messages, tools, force=True
                 )
-                response = self._call_llm(
-                    api_messages,
-                    tools=tools,
-                    stream=stream,
-                    stream_callback=stream_callback,
-                )
+                try:
+                    response = self._call_llm(
+                        api_messages,
+                        tools=tools,
+                        stream=stream,
+                        stream_callback=stream_callback,
+                    )
+                except Exception:
+                    self._run_error_code = "provider_error"
+                    raise
 
             choice = response.get("choices", [{}])[0]
             message = choice.get("message", {})
             content = message.get("content")
+            if not stream and content and self._partial_output is not None:
+                self._partial_output.append(content)
             tool_calls = message.get("tool_calls")
             reasoning_content = message.get("reasoning_content")
             finish_reason = choice.get("finish_reason")
@@ -759,11 +930,18 @@ class NovaAgent:
 
             # If no tool calls, we're done
             if not tool_calls:
+                if response.get("interrupted") or (
+                    _interrupt_check is not None and _interrupt_check()
+                ):
+                    self._stop_reason = "cancelled"
+                elif finish_reason == "length":
+                    self._stop_reason = "token_limit"
                 return content or ""
 
             # Check for interrupt between iterations (Ctrl+C)
             if _interrupt_check is not None and _interrupt_check():
                 logger.info("Agent interrupted by user")
+                self._stop_reason = "cancelled"
                 answerable = [call for call in tool_calls if call.get("id")]
                 skipped = self.tool_executor.skip_batch(answerable)
                 for tool_call, result in zip(answerable, skipped, strict=True):
@@ -781,6 +959,11 @@ class NovaAgent:
                     content = self._truncate_to_token_budget(content, tool_result_max_tokens)
                 api_messages.append(self._append_tool_result(tool_call.get("id", ""), content))
 
+            if any(result.status == "interrupted" for result in results):
+                self._stop_reason = "cancelled"
+                return "[Interrupted]"
+
+        self._stop_reason = "iteration_limit"
         return f"[Max iterations ({max_iterations}) reached]"
 
     def _append_tool_result(self, call_id: str, content: str) -> dict[str, Any]:

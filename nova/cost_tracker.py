@@ -45,6 +45,11 @@ class UsageSnapshot:
     cache_read_cost: float = 0.0
     cache_write_cost: float = 0.0
     reported_total_cost: float | None = None
+    accounted_cost: float = 0.0
+    reported_cost_count: int = 0
+    estimated_cost_count: int = 0
+    unknown_cost_count: int = 0
+    missing_usage_count: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -86,6 +91,7 @@ class CostTracker:
         input_cost: float | None = None,
         output_cost: float | None = None,
         total_cost: float | None = None,
+        usage_reported: bool = True,
     ) -> None:
         """Add usage from an API response.
 
@@ -107,6 +113,7 @@ class CostTracker:
                 input_cost,
                 output_cost,
                 total_cost,
+                usage_reported,
             )
 
     def _add_usage_locked(
@@ -118,7 +125,15 @@ class CostTracker:
         input_cost: float | None,
         output_cost: float | None,
         total_cost: float | None,
+        usage_reported: bool,
     ) -> None:
+        metadata = get_model_metadata(self.model)
+        reported = total_cost is not None or (input_cost is not None and output_cost is not None)
+        priced = reported or (
+            metadata is not None
+            and metadata.input_price_per_million is not None
+            and metadata.output_price_per_million is not None
+        )
         estimated: dict[str, float] = {}
         if total_cost is not None:
             self._reported_total_cost = (self._reported_total_cost or 0.0) + total_cost
@@ -147,6 +162,19 @@ class CostTracker:
             if total_cost is None
             else self._usage.cache_write_cost,
             reported_total_cost=self._reported_total_cost,
+            accounted_cost=self._usage.accounted_cost
+            + (
+                total_cost
+                if total_cost is not None
+                else input_cost
+                + output_cost
+                + estimated.get("cache_read", 0.0)
+                + estimated.get("cache_write", 0.0)
+            ),
+            reported_cost_count=self._usage.reported_cost_count + int(reported),
+            estimated_cost_count=self._usage.estimated_cost_count + int(priced and not reported),
+            unknown_cost_count=self._usage.unknown_cost_count + int(not priced),
+            missing_usage_count=self._usage.missing_usage_count + int(not usage_reported),
         )
 
     def merge(self, other: UsageSnapshot) -> None:
@@ -167,6 +195,11 @@ class CostTracker:
                 cache_read_cost=u.cache_read_cost + other.cache_read_cost,
                 cache_write_cost=u.cache_write_cost + other.cache_write_cost,
                 reported_total_cost=self._reported_total_cost,
+                accounted_cost=u.accounted_cost + other.accounted_cost,
+                reported_cost_count=u.reported_cost_count + other.reported_cost_count,
+                estimated_cost_count=u.estimated_cost_count + other.estimated_cost_count,
+                unknown_cost_count=u.unknown_cost_count + other.unknown_cost_count,
+                missing_usage_count=u.missing_usage_count + other.missing_usage_count,
             )
 
     def _estimate_cost(

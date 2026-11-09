@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from nova.context import label_external_content
 from nova.harness import VerificationResult
 from nova.hooks import EVENT_POST_TOOL_CALL, EVENT_PRE_TOOL_CALL, hooks
+from nova.invocation import ToolFinished, ToolStarted
 from nova.mcp_client import McpToolInfo
 from nova.observability import redact
 from nova.permissions import PermissionResult, has_untrusted_output, is_egress_tool
@@ -454,6 +455,9 @@ class ToolExecutor:
         callback = self._agent._tool_lifecycle_callback
         call_id = tool_call.get("id", "")
         name = tool_call.get("function", {}).get("name", "")
+        emitter = self._agent._active_events
+        if emitter is not None and call_id and name:
+            emitter.emit(ToolStarted, call_id=call_id, tool_name=name)
         if callback and call_id and name:
             callback(call_id, name, "start", None)
 
@@ -461,6 +465,9 @@ class ToolExecutor:
         callback = self._agent._tool_lifecycle_callback
         call_id = tool_call.get("id", "")
         name = tool_call.get("function", {}).get("name", "")
+        emitter = self._agent._active_events
+        if emitter is not None and call_id and name and result is not None:
+            emitter.emit(ToolFinished, call_id=call_id, tool_name=name, status=result.status)
         if callback and call_id and name and result is not None:
             status = "completed" if result.status == "completed" else "failed"
             callback(call_id, name, status, result.content)

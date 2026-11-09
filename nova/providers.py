@@ -171,4 +171,5 @@ def stream_response(
             }
         ],
         "usage": usage,
+        "interrupted": interrupted,
     }

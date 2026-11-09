@@ -228,6 +228,7 @@ do not create or maintain session handoff files.
 
 ### Git & Worktree Discipline
 
+- **Main-only workflow:** Work directly on `main`. Do not create or switch to feature branches or worktrees unless the user explicitly requests an exception. Preserve unrelated changes and keep commits scoped.
 - **Worktree Isolation:** If creating a Git worktree, place it under `.worktrees/<branch-name>`.
 - **Avoid Branch Collisions:** Before checking out or creating branches, run `git worktree list` to ensure the branch is not already locked by another worktree.
 - **Pruning:** Run `git worktree prune` when cleaning up stale or removed worktrees.

@@ -1,6 +1,6 @@
 # SPEC-006: Callable Nova Agent Implementation Plan
 
-**Status:** 📋 Planned
+**Status:** 🟡 In progress
 **Last Updated:** November 2026
 **Type:** SPEC (Implementation Plan)
 
@@ -30,7 +30,7 @@ Source inspected on November 7, 2026:
 
 | Deliverable | Status | Acceptance |
 |------------|--------|------------|
-| Shared invocation contract | 📋 Planned | Explicit completion and stop reasons; serializable results |
+| Shared invocation contract | 🟡 Engine layer implemented | Typed results/events available; bounded `run_task` entry point remains pending |
 | Noninteractive CLI | 📋 Planned | One JSON result or ordered JSONL events; no approval prompts |
 | Python SDK | 📋 Planned | Public typed entry point with cancellation and permission callbacks |
 | Real caller validation | 📋 Planned | Another agent delegates, inspects results, and resumes a session |
@@ -109,14 +109,35 @@ Propagate remaining deadline to provider/tool timeouts and retry waits; signal c
 
 ### Task 1: Shared outcomes and events
 
-**Files:** create `nova/invocation.py`, `tests/test_invocation.py`; modify `nova/agent.py`, `nova/tool_executor.py`, and `nova/__init__.py`.
+**Files:** create `nova/invocation.py`, `tests/test_invocation.py`; modify `nova/agent.py`, `nova/tool_executor.py`, `nova/cost_tracker.py`, `nova/providers.py`, and `nova/__init__.py`.
 
 **Interfaces:** implement the dataclasses and `run_task` signature above; add explicit internal termination state while preserving `NovaAgent.run(...) -> str`. Translate existing lifecycle callbacks into the five public events.
 
-- [ ] Write failing tests for JSON serialization, invalid numeric options, literal interruption/error text, final response versus iteration exhaustion, and exactly one terminal event after partial output.
-- [ ] Run `uv run pytest tests/test_invocation.py -q`; confirm failures exercise the absent contract.
-- [ ] Implement typed outcomes and event translation using existing traces; distinguish run termination from verification status. Snapshot per-run usage rather than reporting cumulative session totals.
-- [ ] Run `uv run pytest tests/test_invocation.py tests/test_agent.py tests/test_agent_streaming.py -q`; all pass.
+- [x] Write failing tests for JSON serialization, invalid numeric options, literal interruption/error text, final response versus iteration exhaustion, and exactly one terminal event after partial output.
+- [x] Run focused tests and confirm failures exercise the absent contract. Used local `.venv/bin/pytest`; `uv run` cannot access its default cache in this sandbox.
+- [x] Implement typed outcomes and event translation using existing traces; distinguish run termination from verification status. Snapshot per-run usage rather than reporting cumulative session totals.
+- [x] Run invocation, agent, streaming, and cost-tracker tests; all pass.
+- [ ] Publish the bounded `run_task` entry point after Task 2 supplies its lifecycle guarantees.
+
+### Task 1 Implementation Record
+
+The root package exports `NovaOptions`, `NovaRunResult`, `NovaUsage`, `NovaError`, and the discriminated `NovaEvent` union. `NovaOptions.validate(task)` validates numeric limits and existing paths, returning the canonical workspace without mutating options. It does not execute a task or enforce runtime limits.
+
+`NovaAgent.run_result(task, stream=True, on_event=None, include_trace=False)` uses the existing agent loop and returns a structured result. It preserves the caller-owned agent/session resources. `NovaAgent.run(...)` keeps its string return and exception behavior, and also records `last_run_result`. This lower-level method does not supply Task 2's session ownership, deadline, approval-stop, or total-budget guarantees.
+
+Ruling: postpone implementation/export of the standalone `run_task` function until Task 2 — accepting limit options before enforcement would misrepresent the callable contract. The engine result method allows this layer to be tested without claiming the bounded SDK is ready. The cost is that standalone delegation remains unavailable until the next task.
+
+Termination is explicit engine state, never response-text parsing. Actual interrupted streams and tools are cancelled, including interruption on the final iteration. Provider length truncation is `limit_reached/token_limit`. Normal model text beginning with `Error:` or `[Interrupted]` remains completed output. Harness verification status is reported separately and can be failed even when the model returns a final response.
+
+Events use a serialized callback path and increasing sequence numbers. Tool events contain call IDs, names, and completion status, omitting arguments/results. A working callback receives exactly one final result event. A callback that raises stops delivery and its original exception propagates without provider retries; no further terminal delivery is attempted through a broken callback. Streamed partial output is retained if a later provider failure occurs. Optional traces may contain workspace content; leave `include_trace` false unless that content is needed.
+
+Usage reports per-turn differences, including child usage merged into the parent tracker. `usage.complete` is false when counts are unavailable, including failed provider attempts before a successful retry. `cost_usd` is null and `cost_source` is unknown when pricing or relevant usage is missing. Fully reported and metadata-estimated costs are accumulated together; mixed provenance is estimated. The legacy display's fallback pricing remains separate from these result fields. No token/cost admission limit is enforced by this increment.
+
+Tests use injected provider clients and stores, including the actual provider stream adapter. Live caller/provider acceptance remains pending. Work is local on `feat/callable-agent`; this continuation does not authorize a new commit or merge.
+
+Read-only review reproduced lost non-streamed findings, incomplete usage after `KeyboardInterrupt`, and duplicate partial output on an outer context-overflow retry. Each received a failing regression followed by a passing fix. Ruling: address duplicate partial output in this increment even though the retry behavior predates it — ordered public events must not repeat text because of an internal retry. This changes retry admission after visible output, which now fails rather than replaying that output. No review findings remain deferred.
+
+Validation on November 8: 1,475 full-suite tests passed with 86.52% coverage; lint, formatting, mypy, and whitespace checks passed. The 41 invocation cases cover serialization, numeric/path validation, model-text independence, completion/verification separation, event ordering and callback errors, interruption, partial output, provider retry/error classification, usage deltas, mixed cost provenance, and child usage. No live provider calls, commit, merge, push, or deployment occurred in this increment. Next action: Task 2's bounded invocation and session ownership, followed by the machine CLI and real caller acceptance.
 
 ### Task 2: Bounded invocation and session ownership
 
