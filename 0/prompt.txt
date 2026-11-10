@@ -1,0 +1,1 @@
+one key think is the ability to call nova agent from another coding agent or other agent.. like in claude code cli or claude skd from other code.. but not from IDE
