@@ -1,0 +1,4 @@
+<codex_internal_context source="user_goal">
+User set the goal: "continue implementation phases and steps"
+User set goal status: "active".
+</codex_internal_context>
