@@ -1,0 +1,1 @@
+do we really need ACP? we wouldn't every embed nova agent in an IDE
