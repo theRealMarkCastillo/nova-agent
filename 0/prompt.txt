@@ -1,0 +1,1 @@
+so the other parts I want review is tool calling catalog, mcp support, and skills support. like when the list of tools and skills grow, how to optimize that? also, we need to create or update the tests/eval suite. Maybe we could use MLflow for tracing and evals?
