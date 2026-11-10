@@ -1,0 +1,1 @@
+[281] assistant: The full suite currently passes: 1,508 tests, with the packaged-install check passing separately. Review found that malformed provider cost data can produce `NaN`, so I’m tightening usage validation and JSON serialization before treating the protocol as ready for caller acceptance.
