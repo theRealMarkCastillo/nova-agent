@@ -1,0 +1,1 @@
+with mlflow we could do a lot of the evals/tracing/debugging locally with local mlflow
