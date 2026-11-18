@@ -44,28 +44,11 @@ config.yaml
 .DS_Store
 Thumbs.db
 
-# Share only portable Entire settings/hooks; keep other agent state local.
-!/.agents/
-/.agents/*
-!/.agents/hooks.json
-!/.claude/
-/.claude/*
-!/.claude/settings.json
-!/.codex/
-/.codex/*
-!/.codex/hooks.json
-!/.opencode/
-/.opencode/*
-!/.opencode/plugins/
-/.opencode/plugins/*
-!/.opencode/plugins/entire.ts
-
-# Entire's nested ignore file excludes its runtime data and personal settings.
-!/.entire/
-/.entire/*
-!/.entire/.gitignore
-!/.entire/settings.json
-!/.entire/redactors/
+# Local AI coding-agent state
+/.agents/
+/.claude/
+/.codex/
+/.opencode/
 
 # mypy
 .mypy_cache/

@@ -207,26 +207,7 @@ When you create or enter a worktree, make sure to:
 
 Use `uv run python`, `uv run pytest`, and `uv run ruff` (or the local `.venv/bin/*` binaries) — never global python3 or pytest.
 
-## Session Continuity — Entire
-
-Entire is the source of session continuity. The handoff document protocol is retired;
-do not create or maintain session handoff files.
-
-- At session start, read `.entire/agent-guide.md`, inspect `git status`, and recover
-  relevant decisions and next actions from Entire sessions and checkpoints.
-- Check recorded context against current source and verification results before acting.
-- Before yielding, record the outcome, files changed, validation pass/fail/pending
-  state, blockers, and next action in the tracked session. Distinguish local,
-  committed, pushed, migrated, and deployed state.
-- If Entire retrieval or tracking fails, report the gap and inspect current Git and
-  source state; do not recreate the handoff protocol.
-- Run verification appropriate to the change. Entire records context; it does not
-  establish correctness or authorize commits, pushes, deployments, or migrations.
-- Preserve unrelated work and stage only intended files or hunks when a commit is
-  authorized. Do not force a WIP commit or reset another session's commit merely
-  to end or resume a session.
-
-### Git & Worktree Discipline
+## Git & Worktree Discipline
 
 - **Main-only workflow:** Work directly on `main`. Do not create or switch to feature branches or worktrees unless the user explicitly requests an exception. Preserve unrelated changes and keep commits scoped.
 - **Worktree Isolation:** If creating a Git worktree, place it under `.worktrees/<branch-name>`.
